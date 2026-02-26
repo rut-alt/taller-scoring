@@ -1,6 +1,7 @@
 # app.py
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -56,7 +57,6 @@ def generate_scale(
 ) -> Dict:
     """
     Genera escala lógica de k categorías para una variable con peso 'peso_pct' (%).
-
     - x(j) equiespaciado en [xmin, 1]
     - contribution(j) = w * x(j)
     - delta(j) = contribution(j) - contribution(j-1)
@@ -159,7 +159,6 @@ def init_model():
 
     variables = []
     for idx, (name, peso) in enumerate(raw, start=1):
-        # ejemplo de etiquetas precargadas para "ramos"
         preset_labels = ["", "", ""]
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
@@ -208,6 +207,40 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# =========================
+# NUEVO: Acciones globales
+# =========================
+
+def clear_all(model: dict, default_k: int = 3) -> dict:
+    """Borra etiquetas y notas; pone k=default_k en todas (mantiene pesos)."""
+    for v in model.get("variables", []):
+        v["k"] = int(default_k)
+        v["labels"] = [""] * int(default_k)
+        v["notes"] = ""
+        # reponer preset de ramos si quieres mantenerlo incluso al borrar:
+        if "Nº de Ramos con nosotros" in v["name"]:
+            v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
+    return model
+
+
+def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
+    """Rellena el modelo con valores aleatorios (demo)."""
+    demo_words = ["Peor", "Bajo", "Medio", "Alto", "Mejor", "Top", "Ok", "Riesgo", "Premium", "Básico"]
+    for v in model.get("variables", []):
+        k = random.randint(k_min, k_max)
+        v["k"] = k
+        v["labels"] = [f"{random.choice(demo_words)} {i+1}" for i in range(k)]
+        v["notes"] = f"Auto-demo ({k} categorías). Reemplazar en el taller."
+        if "Nº de Ramos con nosotros" in v["name"]:
+            v["k"] = 3
+            v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
+    return model
+
+
+# =========================
+# Sidebar
+# =========================
+
 with st.sidebar:
     st.subheader("Controles")
 
@@ -220,7 +253,20 @@ with st.sidebar:
         help="Ej: 0.01 = 1% en escala [0,1]. Evita que K=1 aporte 0 cuando la variable existe.",
     )
 
-    if st.button("↩️ Reset modelo (pierde cambios)"):
+    cA, cB = st.columns(2)
+    with cA:
+        if st.button("🎲 Aleatorio (demo)", use_container_width=True):
+            st.session_state.model = randomize_model(st.session_state.model)
+            st.rerun()
+
+    with cB:
+        if st.button("🧹 Borrar todo", use_container_width=True):
+            st.session_state.model = clear_all(st.session_state.model)
+            st.rerun()
+
+    st.divider()
+
+    if st.button("↩️ Reset modelo (pierde cambios)", use_container_width=True):
         st.session_state.model = init_model()
         st.rerun()
 
@@ -231,12 +277,16 @@ with st.sidebar:
         data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
         file_name="taller_scoring.json",
         mime="application/json",
+        use_container_width=True,
     )
 
 
+# =========================
+# Tarjetas
+# =========================
+
 vars_list = st.session_state.model["variables"]
 
-# 2 columnas de tarjetas
 col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
@@ -247,7 +297,6 @@ for i, var in enumerate(vars_list):
         with st.container(border=True):
             st.subheader(var["name"])
 
-            # Peso fijo: se muestra pero no se edita
             w = float(var["peso_pct"]) / 100.0
             xmin_auto = xmin_by_weight(w)
             xmin_effective = max(float(xmin_floor), float(xmin_auto))
@@ -258,7 +307,6 @@ for i, var in enumerate(vars_list):
             m3.metric("xmin (auto)", f"{xmin_auto:.2f}")
             m4.metric("xmin (efectivo)", f"{xmin_effective:.2f}")
 
-            # Solo editas k
             new_k = st.number_input(
                 "k (nº de subcategorías)",
                 min_value=2,
@@ -270,7 +318,6 @@ for i, var in enumerate(vars_list):
             var["k"] = int(new_k)
             normalize_labels(var)
 
-            # Etiquetas
             st.markdown("**Etiquetas por categoría (texto libre)**")
             left, right = st.columns(2)
             for j in range(1, int(var["k"]) + 1):
@@ -289,7 +336,6 @@ for i, var in enumerate(vars_list):
                 placeholder="Cómo decidimos la categorización, rangos, etc.",
             )
 
-            # Cálculo (con suelo xmin_floor)
             scale = generate_scale(
                 peso_pct=float(var["peso_pct"]),
                 k=int(var["k"]),
@@ -298,9 +344,7 @@ for i, var in enumerate(vars_list):
             )
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(
-                f"Impacto máximo de esta variable (Δ máx): {scale['delta_max_pct']:.2f}% del score total"
-            )
+            st.caption(f"Impacto máximo de esta variable (Δ máx): {scale['delta_max_pct']:.2f}% del score total")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -312,8 +356,7 @@ for v in st.session_state.model["variables"]:
             "Variable": v["name"],
             "Peso (%)": float(v["peso_pct"]),
             "k": int(v["k"]),
-            "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3])
-            + (" ..." if len(v["labels"]) > 3 else ""),
+            "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3]) + (" ..." if len(v["labels"]) > 3 else ""),
         }
     )
 st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
