@@ -253,7 +253,6 @@ def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
 # =========================
 # Sidebar
 # =========================
-
 with st.sidebar:
 
     # --- LOGO ---
@@ -282,21 +281,26 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-st.subheader("📘 Leyenda columnas del scoring")
 
-st.markdown("""
-**K (j)**  
-Número de subcategoría (orden interno de peor → mejor).
+    # --- LEYENDA ---
+    st.subheader("📘 Leyenda columnas del scoring")
 
-**x(j)**  
-Valor normalizado entre 0 y 1 asignado a cada categoría.
+    st.markdown("""
+    **K (j)**  
+    Número de subcategoría (orden interno de peor → mejor).
 
-**Suma al score total % (w*x)**  
-Impacto real que aporta esa categoría al score final del cliente.
+    **x(j)**  
+    Valor normalizado entre 0 y 1 asignado a cada categoría.
 
-**Δ vs prev %**  
-Incremento de score respecto a la categoría anterior.
-""")
+    **Suma al score total % (w*x)**  
+    Impacto real que aporta esa categoría al score final del cliente.
+
+    **Δ vs prev %**  
+    Incremento de score respecto a la categoría anterior.
+    """)
+
+    st.divider()
+
     if st.button("↩️ Reset modelo (pierde cambios)", use_container_width=True):
         st.session_state.model = init_model()
         st.rerun()
@@ -311,6 +315,7 @@ Incremento de score respecto a la categoría anterior.
         mime="application/json",
         use_container_width=True,
     )
+
 
 
 # =========================
