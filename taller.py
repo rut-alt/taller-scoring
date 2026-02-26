@@ -282,12 +282,28 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+st.divider()
+st.subheader("📘 Leyenda columnas del scoring")
 
+st.markdown("""
+**K (j)**  
+Número de subcategoría (orden interno de peor → mejor).
+
+**x(j)**  
+Valor normalizado entre 0 y 1 asignado a cada categoría.
+
+**Suma al score total % (w*x)**  
+Impacto real que aporta esa categoría al score final del cliente.
+
+**Δ vs prev %**  
+Incremento de score respecto a la categoría anterior.
+""")
     if st.button("↩️ Reset modelo (pierde cambios)", use_container_width=True):
         st.session_state.model = init_model()
         st.rerun()
 
     st.divider()
+    
     st.caption("Exporta el estado del taller (k, etiquetas, notas).")
     st.download_button(
         "⬇️ Descargar JSON del taller",
