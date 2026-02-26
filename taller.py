@@ -212,14 +212,27 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
 # =========================
 
 def clear_all(model: dict, default_k: int = 3) -> dict:
-    """Borra etiquetas y notas; pone k=default_k en todas (mantiene pesos)."""
+    """Borra etiquetas/notas y resetea a k=default_k. También limpia session_state de inputs."""
     for v in model.get("variables", []):
+        var_id = v["id"]
+
+        # 1) reset del modelo
         v["k"] = int(default_k)
         v["labels"] = [""] * int(default_k)
         v["notes"] = ""
-        # reponer preset de ramos si quieres mantenerlo incluso al borrar:
+
+        # (opcional) si quieres mantener el preset de ramos incluso al borrar:
         if "Nº de Ramos con nosotros" in v["name"]:
             v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
+
+        # 2) limpiar inputs en session_state para que la UI se vacíe
+        st.session_state.pop(f"k_{var_id}", None)
+        st.session_state.pop(f"notes_{var_id}", None)
+
+        # borra varias posibles keys antiguas (por si antes hubo k>3)
+        for j in range(1, 11):  # porque tu max_value de k es 10
+            st.session_state.pop(f"lbl_{var_id}_{j}", None)
+
     return model
 
 
