@@ -283,7 +283,7 @@ with st.sidebar:
     st.divider()
 
     # --- LEYENDA ---
-    st.subheader("📘 Leyenda columnas del scoring")
+    st.subheader("Leyenda columnas del scoring")
 
     st.markdown("""
     **K (j)**  
