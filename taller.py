@@ -53,7 +53,7 @@ def generate_scale(
     peso_pct: float,
     k: int,
     xmin: Optional[float] = None,
-    xmin_floor: float = 0.01,  # 👈 para que "si existe la variable, cuenta" (por defecto 1%)
+    xmin_floor: float = 0.01,  #  para que "si existe la variable, cuenta" (por defecto 1%)
 ) -> Dict:
     """
     Genera escala lógica de k categorías para una variable con peso 'peso_pct' (%).
@@ -69,7 +69,7 @@ def generate_scale(
     if xmin is None:
         xmin = xmin_by_weight(w)
 
-    # 👇 Suelo mínimo: evita que la peor categoría aporte 0 si la variable "existe"
+    #  Suelo mínimo: evita que la peor categoría aporte 0 si la variable "existe"
     xmin = max(float(xmin_floor), float(xmin))
     xmin = max(0.0, min(1.0, float(xmin)))
 
@@ -255,12 +255,12 @@ with st.sidebar:
 
     cA, cB = st.columns(2)
     with cA:
-        if st.button("🎲 Aleatorio (demo)", use_container_width=True):
+        if st.button("Aleatorio (demo)", use_container_width=True):
             st.session_state.model = randomize_model(st.session_state.model)
             st.rerun()
 
     with cB:
-        if st.button("🧹 Borrar todo", use_container_width=True):
+        if st.button("Borrar todo", use_container_width=True):
             st.session_state.model = clear_all(st.session_state.model)
             st.rerun()
 
