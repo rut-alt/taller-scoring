@@ -1,7 +1,7 @@
 # app.py
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -9,7 +9,7 @@ import streamlit as st
 
 
 # =========================
-# Tu lógica (intacta)
+# Lógica scoring
 # =========================
 
 @dataclass(frozen=True)
@@ -23,6 +23,10 @@ class CategoryResult:
 
 
 def xmin_by_weight(w: float) -> float:
+    """
+    Asignación de x_min según el mapping del modelo.
+    w en proporción (7,5% = 0.075)
+    """
     peso_pct = round(w * 100, 1)
     if peso_pct <= 0:
         return 0.0
@@ -44,14 +48,29 @@ def xmin_by_weight(w: float) -> float:
     return mapping.get(peso_pct, 0.20)
 
 
-def generate_scale(peso_pct: float, k: int, xmin: Optional[float] = None) -> Dict:
+def generate_scale(
+    peso_pct: float,
+    k: int,
+    xmin: Optional[float] = None,
+    xmin_floor: float = 0.01,  # 👈 para que "si existe la variable, cuenta" (por defecto 1%)
+) -> Dict:
+    """
+    Genera escala lógica de k categorías para una variable con peso 'peso_pct' (%).
+
+    - x(j) equiespaciado en [xmin, 1]
+    - contribution(j) = w * x(j)
+    - delta(j) = contribution(j) - contribution(j-1)
+    """
     if k < 2:
         raise ValueError("k debe ser >= 2 (mínimo 2 categorías).")
 
     w = peso_pct / 100.0
+
     if xmin is None:
         xmin = xmin_by_weight(w)
 
+    # 👇 Suelo mínimo: evita que la peor categoría aporte 0 si la variable "existe"
+    xmin = max(float(xmin_floor), float(xmin))
     xmin = max(0.0, min(1.0, float(xmin)))
 
     results: List[CategoryResult] = []
@@ -86,7 +105,7 @@ def generate_scale(peso_pct: float, k: int, xmin: Optional[float] = None) -> Dic
         "peso_pct": float(peso_pct),
         "w": w,
         "k": int(k),
-        "xmin": xmin,
+        "xmin": float(xmin),
         "x_min_effective": x_min_effective,
         "x_max_effective": x_max_effective,
         "delta_max": round(delta_max, 6),
@@ -102,60 +121,62 @@ def generate_scale(peso_pct: float, k: int, xmin: Optional[float] = None) -> Dic
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
 st.title("Taller scoring — Tarjetas por variable (peso fijo)")
 
+
 def init_model():
-    # 👉 Aquí pones tu catálogo real. El peso NO se edita en la UI.
-    return {
-        "variables": [
+    raw = [
+        ("Antigüedad 1ª contratación", 7.5),
+        ("Vinculación: Nº de Ramos con nosotros", 7.5),
+        ("Rentabilidad de la póliza actual", 7.5),
+        ("Descuentos o Recargos aplicados sobre tarifa", 5.5),
+        ("Morosidad: Históricos sin incidencia en devolución (Anotaciones de póliza)", 5.0),
+        ("Engagement comercial / Uso de canales propios (App / Área cliente / Web privada)", 4.5),
+        ("Frecuencia uso de coberturas complementarias que no emiten siniestralidad.", 4.5),
+        ("Total de asegurados en el Total de sus pólizas - Media de asegurados por póliza", 4.5),
+        ("Edad", 4.5),
+        ("Rentabilidad de la póliza retrospectivo/histórica (LTV)", 4.5),
+        ("Tipo de distribución", 4.5),
+        ("Vinculación: Coberturas complementarias opcionales", 4.5),
+        ("Contactabilidad: Más de X Campos de datos (Tiene App, Teléfono, Mail, etc.).", 4.0),
+        ("Edad del asegurado más mayor", 4.0),
+        ("Vinculación familiar", 3.0),
+        ("Prescriptor", 3.0),
+        ("Exposición a comunicaciones de marca (RRSS, mailing…)", 3.0),
+        ("Descendencia", 3.0),
+        ("Medio de pago", 2.5),
+        ("Frecuencia de pago (Periodicidad)", 2.0),
+        ("Probabilidad de desglose", 1.5),
+        ("Tipo de producto", 1.5),
+        ("NPS", 1.5),
+        ("Mascotas", 1.5),
+        ("Localización (enfocado a potencial de compra)", 1.5),
+        ("Autónomo", 1.0),
+        ("Siniestralidad (Salud)", 1.0),
+        ("Grado de digitalización de la póliza", 0.5),
+        ("Profesión", 0.5),
+        ("Nivel educativo", 0.5),
+        ("Sexo", 0.0),
+    ]
+
+    variables = []
+    for idx, (name, peso) in enumerate(raw, start=1):
+        # ejemplo de etiquetas precargadas para "ramos"
+        preset_labels = ["", "", ""]
+        if "Nº de Ramos con nosotros" in name:
+            preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
+
+        variables.append(
             {
-                "id": "antiguedad",
-                "name": "Antigüedad 1ª contratación",
-                "peso_pct": 7.5,
+                "id": f"var_{idx:02d}",
+                "name": name,
+                "peso_pct": float(peso),  # fijo
                 "k": 3,
-                "labels": ["", "", ""],
+                "labels": preset_labels,
                 "notes": "",
-            },
-            {
-                "id": "vinculacion_ramos",
-                "name": "Vinculación: Nº de Ramos con nosotros",
-                "peso_pct": 7.5,
-                "k": 3,
-                "labels": ["0 ramos", "1-2 ramos", "3 o más ramos"],
-                "notes": "",
-            },
-            {
-                "id": "rentabilidad",
-                "name": "Rentabilidad de la póliza actual",
-                "peso_pct": 7.5,
-                "k": 3,
-                "labels": ["", "", ""],
-                "notes": "",
-            },
-            {
-                "id": "descuentos_recargos",
-                "name": "Descuentos o Recargos aplicados sobre tarifa",
-                "peso_pct": 5.5,
-                "k": 3,
-                "labels": ["", "", ""],
-                "notes": "",
-            },
-            {
-                "id": "morosidad",
-                "name": "Morosidad: Históricos sin incidencia en devolución",
-                "peso_pct": 5.0,
-                "k": 3,
-                "labels": ["", "", ""],
-                "notes": "",
-            },
-            {
-                "id": "engagement",
-                "name": "Engagement comercial / Uso de canales propios",
-                "peso_pct": 4.5,
-                "k": 3,
-                "labels": ["", "", ""],
-                "notes": "",
-            },
-        ]
-    }
+            }
+        )
+
+    return {"variables": variables}
+
 
 if "model" not in st.session_state:
     st.session_state.model = init_model()
@@ -177,10 +198,10 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
         label = labels[idx] if idx < len(labels) else ""
         rows.append(
             {
-                "j": r.j,
+                "K (j)": r.j,
                 "Etiqueta (texto libre)": label,
                 "x(j)": r.x,
-                "Aporte % (w*x)": r.contribution_pct,
+                "Suma al score total % (w*x)": r.contribution_pct,
                 "Δ vs prev %": r.delta_from_prev_pct,
             }
         )
@@ -189,6 +210,16 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
 
 with st.sidebar:
     st.subheader("Controles")
+
+    xmin_floor = st.slider(
+        "Suelo mínimo xmin (para que la peor K sume)",
+        min_value=0.0,
+        max_value=0.30,
+        value=0.01,
+        step=0.01,
+        help="Ej: 0.01 = 1% en escala [0,1]. Evita que K=1 aporte 0 cuando la variable existe.",
+    )
+
     if st.button("↩️ Reset modelo (pierde cambios)"):
         st.session_state.model = init_model()
         st.rerun()
@@ -218,13 +249,14 @@ for i, var in enumerate(vars_list):
 
             # Peso fijo: se muestra pero no se edita
             w = float(var["peso_pct"]) / 100.0
-            xmin = xmin_by_weight(w)
+            xmin_auto = xmin_by_weight(w)
+            xmin_effective = max(float(xmin_floor), float(xmin_auto))
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Peso (%)", f"{var['peso_pct']:.1f}")
             m2.metric("w", f"{w:.4f}")
-            m3.metric("xmin (auto)", f"{xmin:.2f}")
-            # delta_max depende de k, lo sacamos tras generar scale (lo mostramos abajo)
+            m3.metric("xmin (auto)", f"{xmin_auto:.2f}")
+            m4.metric("xmin (efectivo)", f"{xmin_effective:.2f}")
 
             # Solo editas k
             new_k = st.number_input(
@@ -238,13 +270,13 @@ for i, var in enumerate(vars_list):
             var["k"] = int(new_k)
             normalize_labels(var)
 
-            # Etiquetas (texto libre por j)
+            # Etiquetas
             st.markdown("**Etiquetas por categoría (texto libre)**")
             left, right = st.columns(2)
             for j in range(1, int(var["k"]) + 1):
                 target = left if j % 2 == 1 else right
                 var["labels"][j - 1] = target.text_input(
-                    f"j = {j}",
+                    f"K = {j}",
                     value=var["labels"][j - 1],
                     key=f"lbl_{var['id']}_{j}",
                     placeholder="Ej: 1-2 ramos",
@@ -257,11 +289,18 @@ for i, var in enumerate(vars_list):
                 placeholder="Cómo decidimos la categorización, rangos, etc.",
             )
 
-            # Cálculo
-            scale = generate_scale(peso_pct=float(var["peso_pct"]), k=int(var["k"]), xmin=None)
+            # Cálculo (con suelo xmin_floor)
+            scale = generate_scale(
+                peso_pct=float(var["peso_pct"]),
+                k=int(var["k"]),
+                xmin=None,
+                xmin_floor=float(xmin_floor),
+            )
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(f"Impacto máximo de esta variable (Δ máx): {scale['delta_max_pct']:.2f}% del score total")
+            st.caption(
+                f"Impacto máximo de esta variable (Δ máx): {scale['delta_max_pct']:.2f}% del score total"
+            )
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -273,7 +312,8 @@ for v in st.session_state.model["variables"]:
             "Variable": v["name"],
             "Peso (%)": float(v["peso_pct"]),
             "k": int(v["k"]),
-            "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3]) + (" ..." if len(v["labels"]) > 3 else ""),
+            "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3])
+            + (" ..." if len(v["labels"]) > 3 else ""),
         }
     )
 st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
