@@ -242,6 +242,10 @@ def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
 # =========================
 
 with st.sidebar:
+
+    # --- LOGO ---
+    st.image("LOGOTIPO-AES-02.png", use_container_width=True)
+
     st.subheader("Controles")
 
     xmin_floor = st.slider(
