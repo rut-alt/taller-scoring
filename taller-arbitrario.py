@@ -16,7 +16,7 @@ import streamlit as st
 @dataclass(frozen=True)
 class CategoryResult:
     j: int
-    x: float
+    x: float  # aquí lo usamos como p(j) normalizado (share)
     contribution: float
     contribution_pct: float
     delta_from_prev: float
@@ -27,40 +27,58 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def generate_scale_manual_x(
+def normalize_to_sum1(values: List[float]) -> List[float]:
+    """Normaliza lista no-negativa para que sume 1. Si suma 0, reparte uniforme."""
+    vals = [max(0.0, float(v)) for v in (values or [])]
+    s = sum(vals)
+    if s <= 0:
+        n = len(vals)
+        if n == 0:
+            return []
+        return [1.0 / n] * n
+    return [v / s for v in vals]
+
+
+def generate_scale_manual_p_sum1(
     w: float,
     k: int,
-    x_values: List[float],
+    p_values: List[float],
+    auto_normalize: bool = True,
 ) -> Dict:
     """
-    Escala con x(j) manual (no equidistante).
-    - x_values: lista de longitud k con valores en [0,1]
-    - contribution(j) = w * x(j)
+    Escala con p(j) manual (shares) que SUMAN 1 por variable.
+    - p_values: lista longitud k con valores en [0,1]
+    - si auto_normalize=True, se normaliza internamente para que sumen 1
+    - contribution(j) = w * p(j)
     - delta(j) = contribution(j) - contribution(j-1)
     """
     if k < 2:
         raise ValueError("k debe ser >= 2.")
     w = clamp01(w)
 
-    xs = list(x_values or [])
-    if len(xs) < k:
-        xs += [0.0] * (k - len(xs))
-    if len(xs) > k:
-        xs = xs[:k]
-    xs = [clamp01(x) for x in xs]
+    ps = list(p_values or [])
+    if len(ps) < k:
+        ps += [0.0] * (k - len(ps))
+    if len(ps) > k:
+        ps = ps[:k]
+    ps = [clamp01(p) for p in ps]
+
+    sum_raw = sum(ps)
+    ps_eff = normalize_to_sum1(ps) if auto_normalize else ps
+    sum_eff = sum(ps_eff)
 
     results: List[CategoryResult] = []
     prev_contrib = 0.0
 
     for j in range(1, k + 1):
-        x = xs[j - 1]
-        contrib = w * x
+        p = ps_eff[j - 1]
+        contrib = w * p
         delta = contrib - prev_contrib if j > 1 else 0.0
 
         results.append(
             CategoryResult(
                 j=j,
-                x=round(x, 6),
+                x=round(p, 6),
                 contribution=round(contrib, 6),
                 contribution_pct=round(contrib * 100.0, 4),
                 delta_from_prev=round(delta, 6),
@@ -69,29 +87,31 @@ def generate_scale_manual_x(
         )
         prev_contrib = contrib
 
-    x_min_effective = results[0].x if results else 0.0
-    x_max_effective = results[-1].x if results else 0.0
-    delta_max = w * (x_max_effective - x_min_effective)
+    # aquí delta_max no tiene mucho sentido como antes (porque no es una escala 0..1),
+    # pero podemos reportar el máximo aporte de una categoría
+    max_contrib = max((r.contribution for r in results), default=0.0)
 
     return {
         "w": float(w),
         "peso_pct": float(w * 100.0),
         "k": int(k),
-        "x_min_effective": x_min_effective,
-        "x_max_effective": x_max_effective,
-        "delta_max": round(delta_max, 6),
-        "delta_max_pct": round(delta_max * 100.0, 4),
+        "sum_p_raw": float(sum_raw),
+        "sum_p_eff": float(sum_eff),
+        "auto_normalize_p": bool(auto_normalize),
+        "max_contribution": float(max_contrib),
+        "max_contribution_pct": round(max_contrib * 100.0, 4),
         "categories": results,
-        "x_values": xs,
+        "p_values_raw": ps,
+        "p_values_eff": ps_eff,
     }
 
 
 # =========================
-# App (taller arbitrario: k + w + x manual)
+# App
 # =========================
 
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
-st.title("Taller scoring — Tarjetas por variable (k + peso + x(j) manual)")
+st.title("Taller scoring — Tarjetas por variable (k + peso + p(j) que suma 1)")
 
 
 def init_model():
@@ -132,20 +152,21 @@ def init_model():
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
         preset_labels = ["", "", ""]
-        preset_x = [0.0, 0.5, 1.0]
+        # p(j) por defecto uniforme (suma 1)
+        preset_p = [1 / 3, 1 / 3, 1 / 3]
 
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            preset_x = [0.01, 0.505, 1.0]  # ejemplo como tu captura, editable igualmente
+            preset_p = [0.2, 0.3, 0.5]  # ejemplo, suma 1
 
         variables.append(
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
-                "w": float(peso_pct) / 100.0,  # w en [0,1]
+                "w": float(peso_pct) / 100.0,
                 "k": 3,
                 "labels": preset_labels,
-                "x_values": preset_x,          # <-- NUEVO
+                "p_values": preset_p,  # <-- ahora usamos p_values (shares)
                 "notes": "",
             }
         )
@@ -154,7 +175,7 @@ def init_model():
         "variables": variables,
         "settings": {
             "normalize_weights": False,
-            "enforce_monotone_x_default": True,
+            "auto_normalize_p": True,  # normaliza p para que sume 1
         },
     }
 
@@ -173,30 +194,19 @@ def normalize_labels(var: dict):
     var["labels"] = labels
 
 
-def normalize_x_values(var: dict):
-    """
-    Asegura que x_values tiene longitud k.
-    Si faltan valores, completa con una rampa desde el último hasta 1.
-    """
+def normalize_p_values(var: dict):
+    """Asegura longitud k en p_values; por defecto uniforme si faltan."""
     k = int(var["k"])
-    xs = list(var.get("x_values") or [])
-
-    if len(xs) < k:
-        if len(xs) == 0:
-            xs = [0.0] * k
-        else:
-            last = clamp01(xs[-1])
-            missing = k - len(xs)
-            if missing == 1:
-                xs += [1.0]
-            else:
-                step = (1.0 - last) / missing if missing > 0 else 0.0
-                xs += [clamp01(last + step * (i + 1)) for i in range(missing)]
-
-    if len(xs) > k:
-        xs = xs[:k]
-
-    var["x_values"] = [clamp01(x) for x in xs]
+    ps = list(var.get("p_values") or [])
+    if len(ps) < k:
+        ps += [0.0] * (k - len(ps))
+    if len(ps) > k:
+        ps = ps[:k]
+    # clamp
+    ps = [clamp01(p) for p in ps]
+    # si está auto-normalize, lo dejamos en estado "raw" pero con longitud correcta;
+    # la normalización real se aplica en el cálculo.
+    var["p_values"] = ps
 
 
 def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
@@ -207,47 +217,39 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
             {
                 "K (j)": r.j,
                 "Etiqueta (texto libre)": label,
-                "x(j)": r.x,
-                "Suma al score total % (w*x)": r.contribution_pct,
+                "p(j) (suma 1)": r.x,
+                "Suma al score total % (w*p)": r.contribution_pct,
                 "Δ vs prev %": r.delta_from_prev_pct,
             }
         )
     return pd.DataFrame(rows)
 
 
-# =========================
-# Acciones globales
-# =========================
-
 def clear_all(model: dict, default_k: int = 3) -> dict:
-    """Borra etiquetas/notas y resetea a k=default_k. No toca los pesos."""
+    """Borra etiquetas/notas y resetea k y p-values (uniforme). No toca los pesos."""
     for v in model.get("variables", []):
         var_id = v["id"]
-
         v["k"] = int(default_k)
         v["labels"] = [""] * int(default_k)
-        v["x_values"] = [0.0, 0.5, 1.0] if default_k == 3 else [round(i / (default_k - 1), 6) for i in range(default_k)]
+        v["p_values"] = [1.0 / default_k] * default_k
         v["notes"] = ""
 
         if "Nº de Ramos con nosotros" in v["name"]:
             v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            v["x_values"] = [0.01, 0.505, 1.0]
+            v["p_values"] = [0.2, 0.3, 0.5]
 
-        # limpiar inputs
         st.session_state.pop(f"k_{var_id}", None)
         st.session_state.pop(f"notes_{var_id}", None)
         st.session_state.pop(f"w_{var_id}", None)
-        st.session_state.pop(f"mono_{var_id}", None)
-
+        st.session_state.pop(f"pauto_{var_id}", None)
         for j in range(1, 11):
             st.session_state.pop(f"lbl_{var_id}_{j}", None)
-            st.session_state.pop(f"x_{var_id}_{j}", None)
+            st.session_state.pop(f"p_{var_id}_{j}", None)
 
     return model
 
 
 def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
-    """Rellena k/etiquetas/notas y x_values con valores aleatorios (demo)."""
     demo_words = ["Peor", "Bajo", "Medio", "Alto", "Mejor", "Top", "Ok", "Riesgo", "Premium", "Básico"]
     for v in model.get("variables", []):
         k = random.randint(k_min, k_max)
@@ -255,21 +257,19 @@ def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
         v["labels"] = [f"{random.choice(demo_words)} {i+1}" for i in range(k)]
         v["notes"] = f"Auto-demo ({k} categorías). Reemplazar en el taller."
 
-        xs = sorted([random.random() for _ in range(k)])
-        if k > 0:
-            xs[-1] = 1.0
-        v["x_values"] = [round(clamp01(x), 4) for x in xs]
+        ps = [random.random() for _ in range(k)]
+        ps = normalize_to_sum1(ps)
+        v["p_values"] = [round(p, 4) for p in ps]
 
         if "Nº de Ramos con nosotros" in v["name"]:
             v["k"] = 3
             v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            v["x_values"] = [0.01, 0.505, 1.0]
+            v["p_values"] = [0.2, 0.3, 0.5]
 
     return model
 
 
 def get_effective_weights(model: dict) -> Dict[str, float]:
-    """Devuelve w efectivo por id (aplicando o no normalización). NO modifica el modelo."""
     vars_ = model.get("variables", [])
     raw = {v["id"]: clamp01(float(v.get("w", 0.0))) for v in vars_}
     do_norm = bool(model.get("settings", {}).get("normalize_weights", False))
@@ -287,22 +287,16 @@ with st.sidebar:
 
     st.subheader("Controles globales")
 
-    # NOTA: xmin_floor ya no se usa cuando x(j) es manual.
-    # Lo dejamos para no romper tu layout mental; si quieres lo quitamos.
-    xmin_floor = st.slider(
-        "Suelo mínimo xmin (NO aplica si x(j) es manual)",
-        min_value=0.0,
-        max_value=0.30,
-        value=0.01,
-        step=0.01,
-        help="Con x(j) manual, este control no se usa. Puedes ignorarlo o lo eliminamos.",
-        disabled=True,
-    )
-
     st.session_state.model["settings"]["normalize_weights"] = st.toggle(
         "Normalizar pesos (que sumen 1)",
         value=bool(st.session_state.model["settings"].get("normalize_weights", False)),
         help="Si activas esto, el cálculo usa w_normalizado = w / suma(w). No cambia el valor guardado.",
+    )
+
+    st.session_state.model["settings"]["auto_normalize_p"] = st.toggle(
+        "Auto-normalizar p(j) para que sume 1 (por variable)",
+        value=bool(st.session_state.model["settings"].get("auto_normalize_p", True)),
+        help="Si está activo, aunque introduzcas p que no suma 1, se reescala internamente.",
     )
 
     raw_sum = sum(clamp01(float(v.get("w", 0.0))) for v in st.session_state.model["variables"])
@@ -315,26 +309,20 @@ with st.sidebar:
             st.rerun()
 
     with cB:
-        if st.button("Borrar todo (k/etiquetas/x/notas)", use_container_width=True):
+        if st.button("Borrar todo (k/etiquetas/p/notas)", use_container_width=True):
             st.session_state.model = clear_all(st.session_state.model)
             st.rerun()
 
     st.divider()
 
-    st.subheader("Leyenda columnas del scoring")
+    st.subheader("Leyenda")
     st.markdown(
         """
-**K (j)**  
-Número de subcategoría (orden interno de peor → mejor).
+**p(j)**  
+Share interno por categoría **que suma 1** dentro de cada variable.
 
-**x(j)**  
-Valor manual normalizado (0 a 1). No tiene por qué ser equidistante.
-
-**Suma al score total % (w*x)**  
-Impacto real que aporta esa categoría al score final del cliente.
-
-**Δ vs prev %**  
-Incremento de score respecto a la categoría anterior.
+**Suma al score total % (w*p)**  
+Aporte de esa categoría al score total. (Si w está normalizado, el total máximo queda acotado.)
 """
     )
 
@@ -346,7 +334,7 @@ Incremento de score respecto a la categoría anterior.
 
     st.divider()
 
-    st.caption("Exporta el estado del taller (w, k, x_values, etiquetas, notas + normalización).")
+    st.caption("Exporta el estado del taller (w, k, p_values, etiquetas, notas + normalización).")
     st.download_button(
         "⬇️ Descargar JSON del taller",
         data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
@@ -362,19 +350,19 @@ Incremento de score respecto a la categoría anterior.
 
 vars_list = st.session_state.model["variables"]
 w_effective_by_id = get_effective_weights(st.session_state.model)
+auto_norm_p_global = bool(st.session_state.model["settings"].get("auto_normalize_p", True))
 
 col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
 for i, var in enumerate(vars_list):
     normalize_labels(var)
-    normalize_x_values(var)
+    normalize_p_values(var)
 
     with cols[i % 2]:
         with st.container(border=True):
             st.subheader(var["name"])
 
-            # Peso editable (raw) y peso efectivo (si hay normalización)
             w_raw = clamp01(float(var.get("w", 0.0)))
             w_eff = clamp01(float(w_effective_by_id.get(var["id"], w_raw)))
 
@@ -386,30 +374,30 @@ for i, var in enumerate(vars_list):
             )
             m3.metric("Peso (%) efectivo", f"{(w_eff * 100.0):.2f}%")
 
-            new_w = st.slider(
-                "Peso w (0 a 1)",
-                min_value=0.0,
-                max_value=1.0,
-                value=float(w_raw),
-                step=0.01,
-                key=f"w_{var['id']}",
-                help="Peso arbitrario en [0,1]. Si activas normalización global, se reescala internamente.",
+            var["w"] = float(
+                st.slider(
+                    "Peso w (0 a 1)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(w_raw),
+                    step=0.01,
+                    key=f"w_{var['id']}",
+                )
             )
-            var["w"] = float(new_w)
 
-            new_k = st.number_input(
-                "k (nº de subcategorías)",
-                min_value=2,
-                max_value=10,
-                value=int(var["k"]),
-                step=1,
-                key=f"k_{var['id']}",
+            var["k"] = int(
+                st.number_input(
+                    "k (nº de subcategorías)",
+                    min_value=2,
+                    max_value=10,
+                    value=int(var["k"]),
+                    step=1,
+                    key=f"k_{var['id']}",
+                )
             )
-            var["k"] = int(new_k)
 
-            # al cambiar k, hay que normalizar arrays dependientes
             normalize_labels(var)
-            normalize_x_values(var)
+            normalize_p_values(var)
 
             st.markdown("**Etiquetas por categoría (texto libre)**")
             left, right = st.columns(2)
@@ -419,70 +407,69 @@ for i, var in enumerate(vars_list):
                     f"K = {j}",
                     value=var["labels"][j - 1],
                     key=f"lbl_{var['id']}_{j}",
-                    placeholder="Ej: 1-2 ramos",
                 )
 
-            # x(j) manual editable
-            st.markdown("**x(j) manual (0 a 1)**")
-            leftx, rightx = st.columns(2)
+            st.markdown("**p(j) manual (shares que suman 1)**")
+            leftp, rightp = st.columns(2)
 
-            enforce_default = bool(st.session_state.model.get("settings", {}).get("enforce_monotone_x_default", True))
-            enforce_monotone = st.checkbox(
-                "Forzar x(j) no decreciente (opcional)",
-                value=enforce_default,
-                key=f"mono_{var['id']}",
-                help="Si está activo, al escribir un x más bajo que el anterior se ajusta automáticamente.",
+            # toggle local (hereda el global)
+            auto_norm_local = st.checkbox(
+                "Auto-normalizar p(j) (en esta variable)",
+                value=auto_norm_p_global,
+                key=f"pauto_{var['id']}",
+                help="Si está activo, se reescala para que sume 1 aunque lo introducido no sume 1.",
             )
 
             for j in range(1, int(var["k"]) + 1):
-                target = leftx if j % 2 == 1 else rightx
-                current = float(var["x_values"][j - 1])
+                target = leftp if j % 2 == 1 else rightp
+                current = float(var["p_values"][j - 1])
 
-                new_x = target.number_input(
-                    f"x para K = {j}",
+                new_p = target.number_input(
+                    f"p para K = {j}",
                     min_value=0.0,
                     max_value=1.0,
                     value=float(current),
                     step=0.01,
-                    key=f"x_{var['id']}_{j}",
-                    help="Valor normalizado arbitrario. No tiene por qué ser equidistante.",
+                    key=f"p_{var['id']}_{j}",
                 )
-                new_x = clamp01(new_x)
+                var["p_values"][j - 1] = clamp01(new_p)
 
-                if enforce_monotone and j > 1:
-                    prev = float(var["x_values"][j - 2])
-                    if new_x < prev:
-                        new_x = prev
-
-                var["x_values"][j - 1] = new_x
-
-            if st.button("↺ Reset x(j) a rampa 0→1", key=f"resetx_{var['id']}"):
+            if st.button("↺ Reset p(j) uniforme", key=f"resetp_{var['id']}"):
                 k = int(var["k"])
-                var["x_values"] = [round(i / (k - 1), 6) for i in range(k)]
+                var["p_values"] = [1.0 / k] * k
                 for j in range(1, k + 1):
-                    st.session_state.pop(f"x_{var['id']}_{j}", None)
+                    st.session_state.pop(f"p_{var['id']}_{j}", None)
                 st.rerun()
 
             var["notes"] = st.text_area(
                 "Notas / criterio (opcional)",
                 value=var.get("notes", ""),
                 key=f"notes_{var['id']}",
-                placeholder="Cómo decidimos la categorización, rangos, etc.",
             )
 
-            # Recalcular w efectivo (por si normalización global está activa)
             w_effective_by_id = get_effective_weights(st.session_state.model)
             w_eff = float(w_effective_by_id.get(var["id"], clamp01(float(var.get("w", 0.0)))))
 
-            # Calcular escala con x manual
-            scale = generate_scale_manual_x(
+            scale = generate_scale_manual_p_sum1(
                 w=float(w_eff),
                 k=int(var["k"]),
-                x_values=var["x_values"],
+                p_values=var["p_values"],
+                auto_normalize=bool(auto_norm_local),
             )
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(f"Impacto máximo de esta variable (Δ máx): {scale['delta_max_pct']:.2f}% del score total")
+            # Feedback de suma p
+            sum_raw = scale["sum_p_raw"]
+            sum_eff = scale["sum_p_eff"]
+            if bool(auto_norm_local):
+                st.caption(f"Suma p(j) introducida: {sum_raw:.4f} → (normalizada) {sum_eff:.4f}")
+            else:
+                if abs(sum_raw - 1.0) > 1e-6:
+                    st.warning(f"⚠️ p(j) NO suma 1 (suma={sum_raw:.4f}). Activa auto-normalizar o ajusta valores.")
+                else:
+                    st.caption("p(j) suma 1 ✅")
+
+            st.caption(f"Aporte máximo de una categoría en esta variable: {scale['max_contribution_pct']:.2f}% del score total")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 st.divider()
@@ -494,7 +481,7 @@ w_effective_by_id = get_effective_weights(st.session_state.model)
 for v in st.session_state.model["variables"]:
     w_raw = clamp01(float(v.get("w", 0.0)))
     w_eff = clamp01(float(w_effective_by_id.get(v["id"], w_raw)))
-    xs = [clamp01(x) for x in (v.get("x_values") or [])]
+    ps = [clamp01(p) for p in (v.get("p_values") or [])]
     summary.append(
         {
             "Variable": v["name"],
@@ -502,7 +489,7 @@ for v in st.session_state.model["variables"]:
             "w (efectivo)": round(w_eff, 4),
             "Peso % (efectivo)": round(w_eff * 100.0, 2),
             "k": int(v["k"]),
-            "x (preview)": " | ".join([f"{x:.2f}" for x in xs[:3]]) + (" ..." if len(xs) > 3 else ""),
+            "p (preview)": " | ".join([f"{p:.2f}" for p in ps[:3]]) + (" ..." if len(ps) > 3 else ""),
             "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3]) + (" ..." if len(v["labels"]) > 3 else ""),
         }
     )
