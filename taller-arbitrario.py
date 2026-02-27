@@ -3,15 +3,11 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import List, Dict
 
 import pandas as pd
 import streamlit as st
 
-
-# =========================
-# Lógica scoring
-# =========================
 
 @dataclass(frozen=True)
 class CategoryResult:
@@ -25,24 +21,72 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def generate_scale_fixed_weight_manual_x(
-    peso_pct: float,   # peso fijo en %
-    k: int,
-    x_values: List[float],
-) -> Dict:
+def normalize_list_len(values: List[float], n: int, fill: float = 0.0) -> List[float]:
+    vals = list(values or [])
+    if len(vals) < n:
+        vals += [fill] * (n - len(vals))
+    if len(vals) > n:
+        vals = vals[:n]
+    return vals
+
+
+def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     """
-    x(j) manual en [0,1], con peso fijo (%).
-    contribution_pct(j) = peso_pct * x(j)
+    Construye x(j) con x(k)=1 y gaps (penalizaciones) no negativas entre categorías.
+    gaps: lista de longitud k-1, interpretada como:
+      gap_t = caída al pasar de (t+1) -> t (de mejor a peor), acumulativa.
+    Entonces:
+      x_k = 1
+      x_{k-1} = 1 - gap_{k-1}
+      x_{k-2} = 1 - gap_{k-1} - gap_{k-2}
+      ...
+      x_1 = 1 - sum(gaps)
+
+    Restricción deseada: sum(gaps) <= 1 (saldo).
+    cap_mode:
+      - "clip": si suma>1, recorta el último gap para que suma=1
+      - "scale": si suma>1, reescala todos los gaps para que suma=1
     """
     if k < 2:
         raise ValueError("k debe ser >= 2.")
 
-    xs = list(x_values or [])
-    if len(xs) < k:
-        xs += [0.0] * (k - len(xs))
-    if len(xs) > k:
-        xs = xs[:k]
-    xs = [clamp01(x) for x in xs]
+    gaps = normalize_list_len(gaps, k - 1, fill=0.0)
+    gaps = [max(0.0, float(g)) for g in gaps]
+    s = sum(gaps)
+
+    if s > 1.0 + 1e-12:
+        if cap_mode == "scale":
+            gaps = [g / s for g in gaps]  # ahora suma 1
+        else:
+            # clip: recorta el último gap para ajustar saldo
+            excess = s - 1.0
+            gaps[-1] = max(0.0, gaps[-1] - excess)
+
+    s_eff = sum(gaps)
+    remaining = max(0.0, 1.0 - s_eff)
+
+    # Construir x desde arriba: x_k=1
+    xs = [0.0] * k
+    xs[-1] = 1.0
+    acc = 0.0
+    # gaps index 0..k-2 corresponde a caída al bajar una categoría (de j+1 a j)
+    # Vamos de arriba hacia abajo:
+    for idx in range(k - 2, -1, -1):
+        acc += gaps[idx]
+        xs[idx] = clamp01(1.0 - acc)
+
+    # Garantías: monotónica por construcción y top=1
+    xs[-1] = 1.0
+
+    return {"x_values": xs, "gaps_eff": gaps, "sum_gaps": s_eff, "remaining": remaining}
+
+
+def generate_scale_fixed_weight(
+    peso_pct: float,
+    x_values: List[float],
+) -> Dict:
+    k = len(x_values)
+    xs = [clamp01(x) for x in x_values]
 
     results: List[CategoryResult] = []
     prev = 0.0
@@ -60,23 +104,30 @@ def generate_scale_fixed_weight_manual_x(
         )
         prev = contrib
 
-    delta_max_pct = float(peso_pct) * (results[-1].x - results[0].x) if results else 0.0
+    return {"peso_pct": float(peso_pct), "k": k, "categories": results, "x_values": xs}
 
-    return {
-        "peso_pct": float(peso_pct),
-        "k": int(k),
-        "x_values": xs,
-        "delta_max_pct": round(delta_max_pct, 4),
-        "categories": results,
-    }
+
+def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
+    rows = []
+    for idx, r in enumerate(scale["categories"]):
+        rows.append(
+            {
+                "K (j)": r.j,
+                "Etiqueta (texto libre)": labels[idx] if idx < len(labels) else "",
+                "x(j)": r.x,
+                "Suma al score total % (peso*x)": r.contribution_pct,
+                "Δ vs prev %": r.delta_from_prev_pct,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 # =========================
-# App
+# Streamlit App
 # =========================
 
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
-st.title("Taller scoring — pesos fijos + x(j) manual (mejor=1)")
+st.title("Taller scoring — pesos fijos + 'saldo' para repartir (mejor=1)")
 
 
 def init_model():
@@ -117,20 +168,21 @@ def init_model():
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
         preset_labels = ["", "", ""]
-        preset_x = [0.0, 0.5, 1.0]  # por defecto: peor=0, medio=0.5, mejor=1
+        # Por defecto: repartimos el saldo 1 en (k-1) gaps equitativos: x=[0,0.5,1]
+        preset_gaps = [0.5, 0.5]  # suma 1 → x1=0, x2=0.5, x3=1
 
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            preset_x = [0.0, 0.6, 1.0]
+            preset_gaps = [0.4, 0.6]  # x=[0,0.6,1] (porque x2=1-0.6)
 
         variables.append(
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
-                "peso_pct": float(peso_pct),  # FIJO
+                "peso_pct": float(peso_pct),  # fijo
                 "k": 3,
                 "labels": preset_labels,
-                "x_values": preset_x,
+                "gaps": preset_gaps,          # <-- lo que editáis
                 "notes": "",
             }
         )
@@ -138,9 +190,7 @@ def init_model():
     return {
         "variables": variables,
         "settings": {
-            "force_best_x1": True,         # SIEMPRE mejor=1
-            "force_worst_x0": False,       # opcional
-            "enforce_monotone_default": True,
+            "cap_mode": "clip",  # "clip" o "scale"
         },
     }
 
@@ -151,83 +201,14 @@ if "model" not in st.session_state:
 
 def normalize_labels(var: dict):
     k = int(var["k"])
-    labels = list(var.get("labels") or [])
-    if len(labels) < k:
-        labels += [""] * (k - len(labels))
-    if len(labels) > k:
-        labels = labels[:k]
+    labels = normalize_list_len(var.get("labels") or [], k, fill="")
     var["labels"] = labels
 
 
-def normalize_x_values(var: dict):
+def normalize_gaps(var: dict):
     k = int(var["k"])
-    xs = list(var.get("x_values") or [])
-    if len(xs) < k:
-        xs += [0.0] * (k - len(xs))
-    if len(xs) > k:
-        xs = xs[:k]
-    var["x_values"] = [clamp01(x) for x in xs]
-
-
-def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
-    rows = []
-    for idx, r in enumerate(scale["categories"]):
-        label = labels[idx] if idx < len(labels) else ""
-        rows.append(
-            {
-                "K (j)": r.j,
-                "Etiqueta (texto libre)": label,
-                "x(j)": r.x,
-                "Suma al score total % (peso*x)": r.contribution_pct,
-                "Δ vs prev %": r.delta_from_prev_pct,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-# =========================
-# Acciones globales
-# =========================
-
-def clear_all(model: dict, default_k: int = 3) -> dict:
-    for v in model.get("variables", []):
-        var_id = v["id"]
-        v["k"] = int(default_k)
-        v["labels"] = [""] * int(default_k)
-        v["x_values"] = [0.0, 0.5, 1.0] if default_k == 3 else [round(i / (default_k - 1), 6) for i in range(default_k)]
-        v["notes"] = ""
-
-        if "Nº de Ramos con nosotros" in v["name"]:
-            v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            v["x_values"] = [0.0, 0.6, 1.0]
-
-        st.session_state.pop(f"k_{var_id}", None)
-        st.session_state.pop(f"notes_{var_id}", None)
-        st.session_state.pop(f"mono_{var_id}", None)
-        for j in range(1, 11):
-            st.session_state.pop(f"lbl_{var_id}_{j}", None)
-            st.session_state.pop(f"x_{var_id}_{j}", None)
-    return model
-
-
-def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
-    demo_words = ["Peor", "Bajo", "Medio", "Alto", "Mejor", "Top", "Ok", "Riesgo", "Premium", "Básico"]
-    for v in model.get("variables", []):
-        k = random.randint(k_min, k_max)
-        v["k"] = k
-        v["labels"] = [f"{random.choice(demo_words)} {i+1}" for i in range(k)]
-        v["notes"] = f"Auto-demo ({k} categorías). Reemplazar en el taller."
-
-        xs = sorted([random.random() for _ in range(k)])
-        xs[0] = 0.0
-        xs[-1] = 1.0
-        v["x_values"] = [round(clamp01(x), 4) for x in xs]
-
-        if "Nº de Ramos con nosotros" in v["name"]:
-            v["k"] = 3
-            v["labels"] = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            v["x_values"] = [0.0, 0.6, 1.0]
-    return model
+    gaps = normalize_list_len(var.get("gaps") or [], k - 1, fill=0.0)
+    var["gaps"] = [max(0.0, float(g)) for g in gaps]
 
 
 # =========================
@@ -238,57 +219,25 @@ with st.sidebar:
 
     st.subheader("Controles globales")
 
-    st.session_state.model["settings"]["force_best_x1"] = st.toggle(
-        "Forzar x(mejor) = 1 (recomendado)",
-        value=bool(st.session_state.model["settings"].get("force_best_x1", True)),
-        help="Hace que la mejor categoría siempre aporte el 100% del peso de la variable.",
-    )
-
-    st.session_state.model["settings"]["force_worst_x0"] = st.toggle(
-        "Forzar x(peor) = 0 (opcional)",
-        value=bool(st.session_state.model["settings"].get("force_worst_x0", False)),
-        help="Fija la peor categoría a 0 en todas las variables.",
-    )
-
-    st.divider()
-
-    raw_sum = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
-    st.metric("Suma pesos fijos", f"{raw_sum:.2f}%")
-    st.caption("Nota: si esta suma no es 100%, el 'cliente perfecto' suma esa cifra (no reescalamos nada).")
-
-    cA, cB = st.columns(2)
-    with cA:
-        if st.button("Aleatorio (demo)", use_container_width=True):
-            st.session_state.model = randomize_model(st.session_state.model)
-            st.rerun()
-    with cB:
-        if st.button("Borrar todo (k/etiquetas/x/notas)", use_container_width=True):
-            st.session_state.model = clear_all(st.session_state.model)
-            st.rerun()
-
-    st.divider()
-
-    st.subheader("Leyenda")
-    st.markdown(
-        """
-**Peso fijo (%)**: importancia de la variable.
-
-**x(j)**: nivel manual (0–1) por categoría.
-
-**Aporte (%)** = `peso% * x(j)`
-
-Con x(mejor)=1, la mejor categoría aporta exactamente el peso fijo.
-"""
+    st.session_state.model["settings"]["cap_mode"] = st.selectbox(
+        "Si te pasas del saldo (Σ gaps > 1):",
+        options=["clip", "scale"],
+        index=0 if st.session_state.model["settings"].get("cap_mode", "clip") == "clip" else 1,
+        help=(
+            "clip = recorta el último gap para que Σ=1.\n"
+            "scale = reescala todos los gaps proporcionalmente para que Σ=1."
+        ),
     )
 
     st.divider()
+    total_pesos = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
+    st.metric("Suma pesos fijos", f"{total_pesos:.2f}%")
 
-    if st.button("↩️ Reset modelo (pierde cambios)", use_container_width=True):
-        st.session_state.model = init_model()
-        st.rerun()
+    st.caption("Aquí solo tocáis la escala interna (x), no los pesos.")
 
     st.divider()
 
+    st.caption("Exporta el estado del taller (k, gaps, etiquetas, notas).")
     st.download_button(
         "⬇️ Descargar JSON del taller",
         data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
@@ -307,18 +256,15 @@ vars_list = st.session_state.model["variables"]
 col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
-force_best = bool(st.session_state.model["settings"].get("force_best_x1", True))
-force_worst = bool(st.session_state.model["settings"].get("force_worst_x0", False))
-enforce_default = bool(st.session_state.model["settings"].get("enforce_monotone_default", True))
+cap_mode = st.session_state.model["settings"].get("cap_mode", "clip")
 
 for i, var in enumerate(vars_list):
     normalize_labels(var)
-    normalize_x_values(var)
+    normalize_gaps(var)
 
     with cols[i % 2]:
         with st.container(border=True):
             st.subheader(var["name"])
-
             peso_pct = float(var.get("peso_pct", 0.0))
             st.metric("Peso fijo (%)", f"{peso_pct:.2f}")
 
@@ -333,7 +279,7 @@ for i, var in enumerate(vars_list):
                 )
             )
             normalize_labels(var)
-            normalize_x_values(var)
+            normalize_gaps(var)
 
             st.markdown("**Etiquetas por categoría (texto libre)**")
             left, right = st.columns(2)
@@ -343,89 +289,57 @@ for i, var in enumerate(vars_list):
                     f"K = {j}",
                     value=var["labels"][j - 1],
                     key=f"lbl_{var['id']}_{j}",
-                    placeholder="Ej: >= 5 años",
                 )
 
-            st.markdown("**x(j) manual (0 a 1)**")
-            leftx, rightx = st.columns(2)
+            st.markdown("**Reparto del saldo (gaps) — x(mejor)=1 fijo**")
+            st.caption("Los gaps son las caídas entre categorías al bajar de nivel. Σ gaps ≤ 1.")
 
-            enforce_monotone = st.checkbox(
-                "Forzar x(j) no decreciente (opcional)",
-                value=enforce_default,
-                key=f"mono_{var['id']}",
-            )
-
-            for j in range(1, int(var["k"]) + 1):
-                target = leftx if j % 2 == 1 else rightx
-                current = float(var["x_values"][j - 1])
-
-                new_x = target.number_input(
-                    f"x para K = {j}",
+            # Editas k-1 gaps
+            lg, rg = st.columns(2)
+            for t in range(1, int(var["k"])):  # 1..k-1
+                target = lg if t % 2 == 1 else rg
+                var["gaps"][t - 1] = target.number_input(
+                    f"gap {t} (caída entre K={t} y K={t+1})",
                     min_value=0.0,
                     max_value=1.0,
-                    value=float(current),
+                    value=float(var["gaps"][t - 1]),
                     step=0.01,
-                    key=f"x_{var['id']}_{j}",
+                    key=f"gap_{var['id']}_{t}",
                 )
-                new_x = clamp01(new_x)
 
-                if enforce_monotone and j > 1:
-                    prev = float(var["x_values"][j - 2])
-                    if new_x < prev:
-                        new_x = prev
+            # Convertimos gaps -> x
+            conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
+            xs = conv["x_values"]
+            var["gaps"] = conv["gaps_eff"]  # por si hubo clip/scale
 
-                var["x_values"][j - 1] = new_x
-
-            # ANCLAS GLOBALES
-            if force_worst:
-                var["x_values"][0] = 0.0
-            if force_best:
-                var["x_values"][-1] = 1.0  # <-- lo que pedías: mejor siempre = 1
-
-            if st.button("↺ Reset x(j) a rampa 0→1", key=f"resetx_{var['id']}"):
-                k = int(var["k"])
-                var["x_values"] = [round(i / (k - 1), 6) for i in range(k)]
-                # garantizamos mejor=1 si toggle activo
-                if force_best:
-                    var["x_values"][-1] = 1.0
-                if force_worst:
-                    var["x_values"][0] = 0.0
-                for j in range(1, k + 1):
-                    st.session_state.pop(f"x_{var['id']}_{j}", None)
-                st.rerun()
+            st.info(f"Saldo usado: {conv['sum_gaps']:.3f} | Saldo restante: {conv['remaining']:.3f} | x(mejor)=1")
 
             var["notes"] = st.text_area(
                 "Notas / criterio (opcional)",
                 value=var.get("notes", ""),
                 key=f"notes_{var['id']}",
-                placeholder="Cómo decidimos la categorización, rangos, etc.",
             )
 
-            scale = generate_scale_fixed_weight_manual_x(
-                peso_pct=peso_pct,
-                k=int(var["k"]),
-                x_values=var["x_values"],
-            )
+            scale = generate_scale_fixed_weight(peso_pct=peso_pct, x_values=xs)
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(f"Máximo de esta variable (mejor): {peso_pct:.2f}% del score total (porque x=1)")
+            st.caption(f"Máximo de la variable (mejor): {peso_pct:.2f}% (porque x=1)")
             st.dataframe(df, use_container_width=True, hide_index=True)
-
 
 st.divider()
 st.subheader("Resumen del modelo")
-
 summary = []
 for v in st.session_state.model["variables"]:
-    xs = [clamp01(x) for x in (v.get("x_values") or [])]
+    k = int(v["k"])
+    conv = gaps_to_x(k=k, gaps=v.get("gaps") or [], cap_mode=cap_mode)
+    xs = conv["x_values"]
     summary.append(
         {
             "Variable": v["name"],
-            "Peso fijo %": round(float(v.get("peso_pct", 0.0)), 2),
-            "k": int(v["k"]),
+            "Peso %": round(float(v.get("peso_pct", 0.0)), 2),
+            "k": k,
+            "Σ gaps": round(conv["sum_gaps"], 3),
             "x (preview)": " | ".join([f"{x:.2f}" for x in xs[:3]]) + (" ..." if len(xs) > 3 else ""),
-            "Etiquetas (preview)": " | ".join([lab for lab in v["labels"] if lab][:3]) + (" ..." if len(v["labels"]) > 3 else ""),
         }
     )
-
 st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
