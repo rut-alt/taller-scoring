@@ -28,17 +28,17 @@ def clamp01(x: float) -> float:
 
 
 def generate_scale_manual_x(
-    w: float,
+    peso_pct: float,   # peso en % (ya reescalado si aplica)
     k: int,
     x_values: List[float],
 ) -> Dict:
     """
     x(j) manual (nivel) en [0,1]
-    contribution(j) = w * x(j)
+    contrib_pct(j) = peso_pct * x(j)
     """
     if k < 2:
         raise ValueError("k debe ser >= 2.")
-    w = clamp01(w)
+    peso_pct = float(peso_pct)
 
     xs = list(x_values or [])
     if len(xs) < k:
@@ -48,51 +48,50 @@ def generate_scale_manual_x(
     xs = [clamp01(x) for x in xs]
 
     results: List[CategoryResult] = []
-    prev_contrib = 0.0
+    prev_contrib_pct = 0.0
 
     for j in range(1, k + 1):
         x = xs[j - 1]
-        contrib = w * x
-        delta = contrib - prev_contrib if j > 1 else 0.0
+        contrib_pct = peso_pct * x
+        delta_pct = contrib_pct - prev_contrib_pct if j > 1 else 0.0
 
         results.append(
             CategoryResult(
                 j=j,
                 x=round(x, 6),
-                contribution=round(contrib, 6),
-                contribution_pct=round(contrib * 100.0, 4),
-                delta_from_prev=round(delta, 6),
-                delta_from_prev_pct=round(delta * 100.0, 4),
+                contribution=round(contrib_pct / 100.0, 6),  # en proporción, por compatibilidad
+                contribution_pct=round(contrib_pct, 4),      # EN %
+                delta_from_prev=round(delta_pct / 100.0, 6),
+                delta_from_prev_pct=round(delta_pct, 4),     # EN %
             )
         )
-        prev_contrib = contrib
+        prev_contrib_pct = contrib_pct
 
     x_min_effective = results[0].x if results else 0.0
     x_max_effective = results[-1].x if results else 0.0
-    delta_max = w * (x_max_effective - x_min_effective)
+    delta_max_pct = peso_pct * (x_max_effective - x_min_effective)
 
     return {
-        "w": float(w),
-        "peso_pct": float(w * 100.0),
+        "peso_pct": float(peso_pct),
         "k": int(k),
         "x_min_effective": x_min_effective,
         "x_max_effective": x_max_effective,
-        "delta_max": round(delta_max, 6),
-        "delta_max_pct": round(delta_max * 100.0, 4),
+        "delta_max_pct": round(delta_max_pct, 4),
         "categories": results,
         "x_values": xs,
     }
 
 
 # =========================
-# Modelo
+# App
 # =========================
 
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
-st.title("Taller scoring — x(j) manual + pesos normalizados (score máx 100%)")
+st.title("Taller scoring — pesos fijos + x(j) manual (máximo 100%)")
 
 
 def init_model():
+    # Pesos fijos del modelo (%)
     raw_pct = [
         ("Antigüedad 1ª contratación", 7.5),
         ("Vinculación: Nº de Ramos con nosotros", 7.5),
@@ -140,7 +139,7 @@ def init_model():
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
-                "w": float(peso_pct) / 100.0,
+                "peso_pct": float(peso_pct),  # FIJO
                 "k": 3,
                 "labels": preset_labels,
                 "x_values": preset_x,
@@ -151,10 +150,12 @@ def init_model():
     return {
         "variables": variables,
         "settings": {
-            # IMPORTANTE: activado por defecto para garantizar score máximo 100%
-            "normalize_weights": True,
-            "enforce_monotone_x_default": True,
-            "force_best_x1": True,  # fuerza x(k)=1
+            # si los pesos no suman 100, esto los reescala proporcionalmente
+            "rescale_weights_to_100": True,
+            # anclas recomendadas para escala por variable
+            "force_best_x1": True,
+            "force_worst_x0": False,
+            "enforce_monotone_default": True,
         },
     }
 
@@ -183,17 +184,19 @@ def normalize_x_values(var: dict):
     var["x_values"] = [clamp01(x) for x in xs]
 
 
-def get_effective_weights(model: dict) -> Dict[str, float]:
+def get_effective_peso_pct_by_id(model: dict) -> Dict[str, float]:
     """
-    Si normalize_weights=True -> w_eff = w / sum(w)
-    Así el máximo score (x=1 en todo) es 100%.
+    Devuelve peso_pct efectivo por variable.
+    Si rescale_weights_to_100=True, aplica alpha = 100 / suma_pesos_raw.
     """
     vars_ = model.get("variables", [])
-    raw = {v["id"]: clamp01(float(v.get("w", 0.0))) for v in vars_}
-    do_norm = bool(model.get("settings", {}).get("normalize_weights", False))
-    total = sum(raw.values())
-    if do_norm and total > 0:
-        return {vid: w / total for vid, w in raw.items()}
+    raw = {v["id"]: float(v.get("peso_pct", 0.0)) for v in vars_}
+    total_raw = sum(raw.values())
+    do_rescale = bool(model.get("settings", {}).get("rescale_weights_to_100", True))
+
+    if do_rescale and total_raw > 0:
+        alpha = 100.0 / total_raw
+        return {vid: w * alpha for vid, w in raw.items()}
     return raw
 
 
@@ -206,7 +209,7 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
                 "K (j)": r.j,
                 "Etiqueta (texto libre)": label,
                 "x(j)": r.x,
-                "Suma al score total % (w*x)": r.contribution_pct,
+                "Suma al score total % (peso*x)": r.contribution_pct,
                 "Δ vs prev %": r.delta_from_prev_pct,
             }
         )
@@ -231,7 +234,6 @@ def clear_all(model: dict, default_k: int = 3) -> dict:
 
         st.session_state.pop(f"k_{var_id}", None)
         st.session_state.pop(f"notes_{var_id}", None)
-        st.session_state.pop(f"w_{var_id}", None)
         st.session_state.pop(f"mono_{var_id}", None)
         for j in range(1, 11):
             st.session_state.pop(f"lbl_{var_id}_{j}", None)
@@ -247,7 +249,6 @@ def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
         v["labels"] = [f"{random.choice(demo_words)} {i+1}" for i in range(k)]
         v["notes"] = f"Auto-demo ({k} categorías). Reemplazar en el taller."
 
-        # x aleatorio ordenado
         xs = sorted([random.random() for _ in range(k)])
         xs[0] = 0.0
         xs[-1] = 1.0
@@ -265,52 +266,74 @@ def randomize_model(model: dict, k_min: int = 2, k_max: int = 6) -> dict:
 # =========================
 with st.sidebar:
     st.image("LOGOTIPO-AES-05.png", use_container_width=True)
+
     st.subheader("Controles globales")
 
-    st.session_state.model["settings"]["normalize_weights"] = st.toggle(
-        "Normalizar pesos (SUMA w = 1 → score máx 100%)",
-        value=bool(st.session_state.model["settings"].get("normalize_weights", True)),
-        help="Recomendado. Así el cliente perfecto (x=1 en todo) suma 100%.",
+    st.session_state.model["settings"]["rescale_weights_to_100"] = st.toggle(
+        "Reescalar pesos para que SUMEN 100%",
+        value=bool(st.session_state.model["settings"].get("rescale_weights_to_100", True)),
+        help="Si la suma de pesos fijos no es 100, aplica un factor proporcional para que el score máximo sea 100%.",
     )
 
     st.session_state.model["settings"]["force_best_x1"] = st.toggle(
-        "Forzar x(mejor) = 1 en todas las variables",
+        "Forzar x(mejor) = 1",
         value=bool(st.session_state.model["settings"].get("force_best_x1", True)),
-        help="Hace que la mejor categoría de cada variable pueda llegar al máximo de su peso.",
+        help="Recomendado para que el mejor cliente pueda alcanzar el peso completo de cada variable.",
     )
 
-    raw_sum = sum(clamp01(float(v.get("w", 0.0))) for v in st.session_state.model["variables"])
-    eff_sum = sum(get_effective_weights(st.session_state.model).values())
-    st.metric("Suma w (raw)", f"{raw_sum:.4f}")
-    st.metric("Suma w (efectiva)", f"{eff_sum:.4f}")
+    st.session_state.model["settings"]["force_worst_x0"] = st.toggle(
+        "Forzar x(peor) = 0",
+        value=bool(st.session_state.model["settings"].get("force_worst_x0", False)),
+        help="Opcional: fija la peor categoría a 0 para todas las variables.",
+    )
+
+    # métricas globales
+    raw_sum = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
+    eff_map = get_effective_peso_pct_by_id(st.session_state.model)
+    eff_sum = sum(eff_map.values())
+
+    st.metric("Suma pesos (raw)", f"{raw_sum:.2f}%")
+    st.metric("Suma pesos (efectiva)", f"{eff_sum:.2f}%")
+
+    if abs(eff_sum - 100.0) < 1e-6:
+        st.success("Score máximo teórico (x=1 en todo): 100% ✅")
+    else:
+        st.warning(f"Score máximo teórico (x=1 en todo): {eff_sum:.2f}%")
 
     cA, cB = st.columns(2)
     with cA:
         if st.button("Aleatorio (demo)", use_container_width=True):
             st.session_state.model = randomize_model(st.session_state.model)
             st.rerun()
+
     with cB:
         if st.button("Borrar todo (k/etiquetas/x/notas)", use_container_width=True):
             st.session_state.model = clear_all(st.session_state.model)
             st.rerun()
 
     st.divider()
+
     st.subheader("Leyenda")
     st.markdown(
         """
-**Score total (%)** = 100 · Σ(w_i · x_i)
+**Peso fijo (%)**: importancia de la variable en el score.
 
-- **w**: peso de la variable. Normalizado → Σw=1.
-- **x(j)**: nivel manual en [0,1] para cada categoría.
+**x(j)**: nivel manual (0 a 1) por categoría.
+
+**Aporte (%)**: `peso% * x(j)`
+
+Si reescalas pesos a 100%, el cliente perfecto (x=1 en todo) suma 100%.
 """
     )
 
     st.divider()
+
     if st.button("↩️ Reset modelo (pierde cambios)", use_container_width=True):
         st.session_state.model = init_model()
         st.rerun()
 
     st.divider()
+
     st.download_button(
         "⬇️ Descargar JSON del taller",
         data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
@@ -325,12 +348,14 @@ with st.sidebar:
 # =========================
 
 vars_list = st.session_state.model["variables"]
-w_eff_by_id = get_effective_weights(st.session_state.model)
+peso_eff_by_id = get_effective_peso_pct_by_id(st.session_state.model)
 
 col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
 force_best = bool(st.session_state.model["settings"].get("force_best_x1", True))
+force_worst = bool(st.session_state.model["settings"].get("force_worst_x0", False))
+enforce_default = bool(st.session_state.model["settings"].get("enforce_monotone_default", True))
 
 for i, var in enumerate(vars_list):
     normalize_labels(var)
@@ -340,24 +365,12 @@ for i, var in enumerate(vars_list):
         with st.container(border=True):
             st.subheader(var["name"])
 
-            w_raw = clamp01(float(var.get("w", 0.0)))
-            w_eff = clamp01(float(w_eff_by_id.get(var["id"], w_raw)))
+            peso_raw = float(var.get("peso_pct", 0.0))
+            peso_eff = float(peso_eff_by_id.get(var["id"], peso_raw))
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric("w (raw)", f"{w_raw:.4f}")
-            m2.metric("w (efectivo)", f"{w_eff:.4f}" + (" (norm.)" if st.session_state.model["settings"]["normalize_weights"] else ""))
-            m3.metric("Peso % (efectivo)", f"{(w_eff * 100.0):.2f}%")
-
-            var["w"] = float(
-                st.slider(
-                    "Peso w (0 a 1)",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=float(w_raw),
-                    step=0.01,
-                    key=f"w_{var['id']}",
-                )
-            )
+            m1, m2 = st.columns(2)
+            m1.metric("Peso fijo (raw) %", f"{peso_raw:.2f}")
+            m2.metric("Peso efectivo %", f"{peso_eff:.2f}" + (" (reescalado)" if st.session_state.model["settings"]["rescale_weights_to_100"] else ""))
 
             var["k"] = int(
                 st.number_input(
@@ -386,11 +399,11 @@ for i, var in enumerate(vars_list):
             st.markdown("**x(j) manual (0 a 1)**")
             leftx, rightx = st.columns(2)
 
-            enforce_default = bool(st.session_state.model.get("settings", {}).get("enforce_monotone_x_default", True))
             enforce_monotone = st.checkbox(
                 "Forzar x(j) no decreciente (opcional)",
                 value=enforce_default,
                 key=f"mono_{var['id']}",
+                help="Si está activo, al escribir un x más bajo que el anterior se ajusta automáticamente.",
             )
 
             for j in range(1, int(var["k"]) + 1):
@@ -414,7 +427,9 @@ for i, var in enumerate(vars_list):
 
                 var["x_values"][j - 1] = new_x
 
-            # Forzar mejor = 1 si está activo
+            # anclas globales
+            if force_worst:
+                var["x_values"][0] = 0.0
             if force_best:
                 var["x_values"][-1] = 1.0
 
@@ -429,37 +444,34 @@ for i, var in enumerate(vars_list):
                 "Notas / criterio (opcional)",
                 value=var.get("notes", ""),
                 key=f"notes_{var['id']}",
+                placeholder="Cómo decidimos la categorización, rangos, etc.",
             )
 
-            # Recalcular w efectivo tras cambios
-            w_eff_by_id = get_effective_weights(st.session_state.model)
-            w_eff = float(w_eff_by_id.get(var["id"], clamp01(float(var.get("w", 0.0)))))
-
             scale = generate_scale_manual_x(
-                w=float(w_eff),
+                peso_pct=float(peso_eff),
                 k=int(var["k"]),
                 x_values=var["x_values"],
             )
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(f"Impacto máximo de esta variable (si x=1): {w_eff*100:.2f}% del score total")
+            st.caption(f"Impacto máximo de esta variable (si x=1): {peso_eff:.2f}% del score total")
             st.dataframe(df, use_container_width=True, hide_index=True)
+
 
 st.divider()
 st.subheader("Resumen del modelo")
 
+peso_eff_by_id = get_effective_peso_pct_by_id(st.session_state.model)
 summary = []
-w_eff_by_id = get_effective_weights(st.session_state.model)
 for v in st.session_state.model["variables"]:
-    w_raw = clamp01(float(v.get("w", 0.0)))
-    w_eff = clamp01(float(w_eff_by_id.get(v["id"], w_raw)))
+    peso_raw = float(v.get("peso_pct", 0.0))
+    peso_eff = float(peso_eff_by_id.get(v["id"], peso_raw))
     xs = [clamp01(x) for x in (v.get("x_values") or [])]
     summary.append(
         {
             "Variable": v["name"],
-            "w(raw)": round(w_raw, 4),
-            "w(eff)": round(w_eff, 4),
-            "Peso % (eff)": round(w_eff * 100.0, 2),
+            "Peso raw %": round(peso_raw, 2),
+            "Peso efectivo %": round(peso_eff, 2),
             "k": int(v["k"]),
             "x (preview)": " | ".join([f"{x:.2f}" for x in xs[:3]]) + (" ..." if len(xs) > 3 else ""),
         }
