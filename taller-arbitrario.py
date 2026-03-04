@@ -28,6 +28,8 @@ def normalize_list_len(values: List[float], n: int, fill: float = 0.0) -> List[f
     if len(vals) > n:
         vals = vals[:n]
     return vals
+
+
 def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     """
     Construye x(j) con x(k)=1 y gaps (penalizaciones) no negativas entre categorías.
@@ -67,13 +69,10 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     xs = [0.0] * k
     xs[-1] = 1.0
     acc = 0.0
-    # gaps index 0..k-2 corresponde a caída al bajar una categoría (de j+1 a j)
-    # Vamos de arriba hacia abajo:
     for idx in range(k - 2, -1, -1):
         acc += gaps[idx]
         xs[idx] = clamp01(1.0 - acc)
 
-    # Garantías: monotónica por construcción y top=1
     xs[-1] = 1.0
 
     return {"x_values": xs, "gaps_eff": gaps, "sum_gaps": s_eff, "remaining": remaining}
@@ -166,12 +165,11 @@ def init_model():
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
         preset_labels = ["", "", ""]
-        # Por defecto: repartimos el saldo 1 en (k-1) gaps equitativos: x=[0,0.5,1]
         preset_gaps = [0.5, 0.5]  # suma 1 → x1=0, x2=0.5, x3=1
 
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            preset_gaps = [0.4, 0.6]  # x=[0,0.6,1] (porque x2=1-0.6)
+            preset_gaps = [0.4, 0.6]  # x=[0,0.6,1]
 
         variables.append(
             {
@@ -180,7 +178,7 @@ def init_model():
                 "peso_pct": float(peso_pct),  # fijo
                 "k": 3,
                 "labels": preset_labels,
-                "gaps": preset_gaps,          # <-- lo que editáis
+                "gaps": preset_gaps,
                 "notes": "",
             }
         )
@@ -188,7 +186,7 @@ def init_model():
     return {
         "variables": variables,
         "settings": {
-            "cap_mode": "clip",  # "clip" o "scale"
+            "cap_mode": "clip",
         },
     }
 
@@ -304,6 +302,24 @@ for i, var in enumerate(vars_list):
                     step=0.01,
                     key=f"gap_{var['id']}_{t}",
                 )
+
+            # >>> AVISOS <<<
+            raw_gaps = [float(g) for g in (var.get("gaps") or [])]
+            sum_raw = sum(raw_gaps)
+
+            if any(g > 1.0 for g in raw_gaps):
+                st.error(
+                    "⚠️ Hay algún gap > 1. Recuerda: los gaps se introducen en escala 0–1. "
+                    "Ejemplo: 0.40 = 40% del saldo."
+                )
+
+            if sum_raw > 1.0 + 1e-12:
+                st.warning(
+                    f"⚠️ Te has pasado de saldo: Σ gaps = {sum_raw:.3f} (> 1). "
+                    f"Se aplicará el modo '{cap_mode}' para ajustarlo."
+                )
+            # <<< AVISOS <<<
+
             # Convertimos gaps -> x
             conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
             xs = conv["x_values"]
