@@ -28,7 +28,23 @@ def normalize_list_len(values: List[float], n: int, fill: float = 0.0) -> List[f
     if len(vals) > n:
         vals = vals[:n]
     return vals
+# ---- Validación antes de convertir gaps -> x ----
+raw_gaps = [float(g) for g in var["gaps"]]
+sum_raw = sum(raw_gaps)
 
+# 1) Si alguien mete "40" en vez de "0.40"
+if any(g > 1.0 for g in raw_gaps):
+    st.error(
+        "⚠️ Hay gaps > 1. Recuerda que los gaps van en escala 0–1. "
+        "Ejemplo: 0.40 = 40% del saldo."
+    )
+
+# 2) Si te pasas de saldo (Σ gaps > 1)
+if sum_raw > 1.0 + 1e-12:
+    st.warning(
+        f"⚠️ Te has pasado de saldo: Σ gaps = {sum_raw:.3f} (> 1). "
+        f"Se aplicará el modo '{cap_mode}' para ajustarlo."
+    )
 
 def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     """
