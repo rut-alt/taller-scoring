@@ -1,6 +1,7 @@
 # app.py
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import List, Dict
 
@@ -33,16 +34,6 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     """
     Construye x(j) con x(k)=1 y gaps (penalizaciones) no negativas entre categorías.
 
-    gaps: lista de longitud k-1, interpretada como:
-      gap_t = caída al pasar de (t+1) -> t (de mejor a peor), acumulativa.
-
-    Entonces:
-      x_k = 1
-      x_{k-1} = 1 - gap_{k-1}
-      x_{k-2} = 1 - gap_{k-1} - gap_{k-2}
-      ...
-      x_1 = 1 - sum(gaps)
-
     Restricción deseada: sum(gaps) <= 1 (saldo).
     cap_mode:
       - "clip": si suma>1, recorta el último gap para que suma=1
@@ -59,21 +50,18 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
         if cap_mode == "scale":
             gaps = [g / s for g in gaps]  # ahora suma 1
         else:
-            # clip: recorta el último gap para ajustar saldo
             excess = s - 1.0
             gaps[-1] = max(0.0, gaps[-1] - excess)
 
     s_eff = sum(gaps)
     remaining = max(0.0, 1.0 - s_eff)
 
-    # Construir x desde arriba: x_k=1
     xs = [0.0] * k
     xs[-1] = 1.0
     acc = 0.0
     for idx in range(k - 2, -1, -1):
         acc += gaps[idx]
         xs[idx] = clamp01(1.0 - acc)
-
     xs[-1] = 1.0
 
     return {"x_values": xs, "gaps_eff": gaps, "sum_gaps": s_eff, "remaining": remaining}
@@ -122,7 +110,7 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
 # =========================
 
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
-st.title("Taller scoring — pesos fijos + 'saldo' para repartir (mejor=1)")
+st.title("Taller scoring — estructura (K) + pesos editables (bloqueo por JSON)")
 
 
 def init_model():
@@ -163,7 +151,7 @@ def init_model():
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
         preset_labels = ["", "", ""]
-        preset_gaps = [0.5, 0.5]  # suma 1 → x1=0, x2=0.5, x3=1
+        preset_gaps = [0.5, 0.5]  # suma 1 → x=[0,0.5,1]
 
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
@@ -173,7 +161,7 @@ def init_model():
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
-                "peso_pct": float(peso_pct),  # fijo
+                "peso_pct": float(peso_pct),
                 "k": 3,
                 "labels": preset_labels,
                 "gaps": preset_gaps,
@@ -182,10 +170,6 @@ def init_model():
         )
 
     return {"variables": variables, "settings": {"cap_mode": "clip"}}
-
-
-if "model" not in st.session_state:
-    st.session_state.model = init_model()
 
 
 def normalize_labels(var: dict):
@@ -199,11 +183,93 @@ def normalize_gaps(var: dict):
     var["gaps"] = [max(0.0, float(g)) for g in gaps]
 
 
+def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
+    """
+    Aplica el JSON a la estructura del modelo:
+    - fija k, labels, gaps, notes, cap_mode
+    - mantiene el orden y los pesos del JSON (si vienen)
+    """
+    if not isinstance(loaded, dict):
+        return model_state
+
+    loaded_vars = loaded.get("variables") or []
+    if not loaded_vars:
+        return model_state
+
+    settings = loaded.get("settings") or {}
+    if "cap_mode" in settings:
+        model_state["settings"]["cap_mode"] = settings["cap_mode"]
+
+    # Reemplazamos variables por las del JSON (estructura fija)
+    new_vars = []
+    for idx, v in enumerate(loaded_vars, start=1):
+        name = str(v.get("name", "")).strip()
+        if not name:
+            continue
+
+        peso = float(v.get("peso_pct", 0.0))
+        k = int(v.get("k", 3))
+        labels = list(v.get("labels") or [])
+        gaps = list(v.get("gaps") or [])
+        notes = str(v.get("notes", "") or "")
+
+        labels = normalize_list_len(labels, k, fill="")
+        gaps = normalize_list_len(gaps, k - 1, fill=0.0)
+
+        new_vars.append(
+            {
+                "id": f"var_{idx:02d}",
+                "name": name,
+                "peso_pct": float(peso),
+                "k": int(k),
+                "labels": labels,
+                "gaps": gaps,
+                "notes": notes,
+            }
+        )
+
+    model_state["variables"] = new_vars
+    return model_state
+
+
+# -------------------------
+# Session init
+# -------------------------
+if "model" not in st.session_state:
+    st.session_state.model = init_model()
+
+# guardar JSON cargado (persistente) en session_state
+if "loaded_json" not in st.session_state:
+    st.session_state.loaded_json = None
+
+
 # =========================
 # Sidebar
 # =========================
 with st.sidebar:
     st.image("LOGOTIPO-AES-05.png", use_container_width=True)
+
+    st.subheader("Modo de trabajo")
+
+    uploaded_json = st.file_uploader("📌 Cargar modelo JSON (bloquea K/etiquetas/gaps)", type=["json"])
+
+    if uploaded_json is not None:
+        try:
+            st.session_state.loaded_json = json.load(uploaded_json)
+            st.session_state.model = apply_json_to_model(st.session_state.model, st.session_state.loaded_json)
+            st.success("Modelo JSON cargado. K/etiquetas/gaps quedan bloqueados.")
+        except Exception as e:
+            st.error(f"No pude leer el JSON: {e}")
+
+    json_loaded = st.session_state.loaded_json is not None
+
+    if json_loaded:
+        if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
+            st.session_state.loaded_json = None
+            st.session_state.model = init_model()
+            st.rerun()
+
+    st.divider()
 
     st.subheader("Controles globales")
 
@@ -215,17 +281,17 @@ with st.sidebar:
             "clip = recorta el último gap para que Σ=1.\n"
             "scale = reescala todos los gaps proporcionalmente para que Σ=1."
         ),
+        disabled=False,  # esto sí lo dejamos editable siempre
     )
 
     st.divider()
     total_pesos = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
-    st.metric("Suma pesos fijos", f"{total_pesos:.2f}%")
+    st.metric("Suma pesos (%)", f"{total_pesos:.2f}%")
 
-    st.caption("Aquí solo tocáis la escala interna (x), no los pesos.")
+    st.caption("Si hay JSON cargado: K/etiquetas/gaps bloqueados. Solo puedes tocar pesos.")
 
     st.divider()
-
-    st.caption("Exporta el estado del taller (k, gaps, etiquetas, notas).")
+    st.caption("Exporta el estado actual del taller (estructura + pesos).")
     st.download_button(
         "⬇️ Descargar JSON del taller",
         data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
@@ -244,6 +310,7 @@ col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
 cap_mode = st.session_state.model["settings"].get("cap_mode", "clip")
+json_loaded = st.session_state.loaded_json is not None
 
 for i, var in enumerate(vars_list):
     normalize_labels(var)
@@ -252,9 +319,23 @@ for i, var in enumerate(vars_list):
     with cols[i % 2]:
         with st.container(border=True):
             st.subheader(var["name"])
-            peso_pct = float(var.get("peso_pct", 0.0))
-            st.metric("Peso fijo (%)", f"{peso_pct:.2f}")
 
+            if json_loaded:
+                st.info("🔒 Estructura bloqueada por JSON (K/etiquetas/gaps fijos). Para cambiar, quita el JSON.")
+
+            # PESO: SIEMPRE EDITABLE (lo que querías)
+            var["peso_pct"] = float(
+                st.number_input(
+                    "Peso (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(var.get("peso_pct", 0.0)),
+                    step=0.5,
+                    key=f"peso_{var['id']}",
+                )
+            )
+
+            # K: BLOQUEABLE
             var["k"] = int(
                 st.number_input(
                     "k (nº de subcategorías)",
@@ -263,6 +344,7 @@ for i, var in enumerate(vars_list):
                     value=int(var["k"]),
                     step=1,
                     key=f"k_{var['id']}",
+                    disabled=json_loaded,
                 )
             )
             normalize_labels(var)
@@ -276,6 +358,7 @@ for i, var in enumerate(vars_list):
                     f"K = {j}",
                     value=var["labels"][j - 1],
                     key=f"lbl_{var['id']}_{j}",
+                    disabled=json_loaded,
                 )
 
             st.markdown("**Reparto del saldo (gaps) — x(mejor)=1 fijo**")
@@ -291,6 +374,7 @@ for i, var in enumerate(vars_list):
                     value=float(var["gaps"][t - 1]),
                     step=0.01,
                     key=f"gap_{var['id']}_{t}",
+                    disabled=json_loaded,
                 )
 
             # Aviso preventivo si se pasan antes de convertir (informativo)
@@ -336,16 +420,18 @@ for i, var in enumerate(vars_list):
                 f"x(mejor)=1"
             )
 
+            # notas: bloqueadas si hay json
             var["notes"] = st.text_area(
                 "Notas / criterio (opcional)",
                 value=var.get("notes", ""),
                 key=f"notes_{var['id']}",
+                disabled=json_loaded,
             )
 
-            scale = generate_scale_fixed_weight(peso_pct=peso_pct, x_values=xs)
+            scale = generate_scale_fixed_weight(peso_pct=float(var["peso_pct"]), x_values=xs)
             df = scale_to_df(scale, var["labels"])
 
-            st.caption(f"Máximo de la variable (mejor): {peso_pct:.2f}% (porque x=1)")
+            st.caption(f"Máximo de la variable (mejor): {float(var['peso_pct']):.2f}% (porque x=1)")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
 # =========================
