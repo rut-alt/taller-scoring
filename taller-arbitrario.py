@@ -329,33 +329,6 @@ for i, var in enumerate(vars_list):
             x_min = min(xs)
             discr_range = 1.0 - x_min  # porque x_max = 1
 
-            # Clasificación de la capacidad discriminatoria
-            if discr_range >= 0.80:
-                discr_label = "muy discriminatoria"
-            elif discr_range >= 0.50:
-                discr_label = "medianamente discriminatoria"
-            else:
-                discr_label = "poco discriminatoria"
-
-            if conv["sum_gaps"] < 1.0 - eps:
-                st.warning(
-                    "🟡 **Variable menos discriminatoria (Σ gaps < 1)**\n\n"
-                    f"- **Σ gaps usado** = {conv['sum_gaps']:.3f} → **saldo sin usar** = {conv['remaining']:.3f}\n"
-                    f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
-                    f"- Interpretación: la variable es **{discr_label}** (cuanto menor es Δx, menos separa perfiles).\n\n"
-                    "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** y **x(peor)=1−Σ gaps**.\n\n"
-                    "**Recomendación habitual en scoring:** usar **Σ gaps = 1** para que la peor categoría sea **x=0** "
-                    "y la variable utilice toda la escala **0–1**."
-                )
-
-            elif abs(conv["sum_gaps"] - 1.0) <= eps:
-                st.success(
-                    "🟢 **Escala completa (Σ gaps = 1)**\n\n"
-                    f"- **Rango de discriminación** Δx = **{discr_range:.3f}** (máximo).\n"
-                    "- La peor categoría llega a **x=0** y la mejor queda en **x=1**.\n\n"
-                    "📐 **Nota:** en este esquema **Δx = Σ gaps**."
-                )
-
             st.info(f"Saldo usado: {conv['sum_gaps']:.3f} | Saldo restante: {conv['remaining']:.3f} | x(mejor)=1")
 
             var["notes"] = st.text_area(
