@@ -243,9 +243,6 @@ if "loaded_json" not in st.session_state:
     st.session_state.loaded_json = None
 
 
-# =========================
-# Sidebar
-# =========================
 with st.sidebar:
     st.image("LOGOTIPO-AES-05.png", use_container_width=True)
 
@@ -268,7 +265,29 @@ with st.sidebar:
             st.session_state.loaded_json = None
             st.session_state.model = init_model()
             st.rerun()
-    
+
+    # ------------------------------
+    # BOTÓN BORRAR TODO
+    # ------------------------------
+    if st.button("🧨 Borrar todo y empezar taller nuevo", use_container_width=True):
+
+        # quitar JSON cargado
+        st.session_state.loaded_json = None
+
+        # reiniciar modelo
+        st.session_state.model = init_model()
+
+        # limpiar inputs guardados
+        keys_to_delete = [
+            k for k in list(st.session_state.keys())
+            if k.startswith(("k_", "lbl_", "gap_", "peso_", "notes_"))
+        ]
+
+        for k in keys_to_delete:
+            del st.session_state[k]
+
+        st.rerun()
+
     st.divider()
 
     st.subheader("Controles globales")
