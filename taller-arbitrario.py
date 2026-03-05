@@ -268,26 +268,7 @@ with st.sidebar:
             st.session_state.loaded_json = None
             st.session_state.model = init_model()
             st.rerun()
-    # --- Reset TOTAL del taller ---
-st.divider()
-st.subheader("Reiniciar taller")
-
-if st.button("🧨 Borrar todo y empezar de cero", use_container_width=True):
-    # 1) quitar JSON cargado
-    st.session_state.loaded_json = None
-
-    # 2) reiniciar modelo a valores por defecto
-    st.session_state.model = init_model()
-
-    # 3) opcional: limpiar claves de inputs (k_, lbl_, gap_, peso_, notes_)
-    keys_to_delete = [
-        k for k in list(st.session_state.keys())
-        if k.startswith(("k_", "lbl_", "gap_", "peso_", "notes_"))
-    ]
-    for k in keys_to_delete:
-        del st.session_state[k]
-
-    st.rerun()
+    
     st.divider()
 
     st.subheader("Controles globales")
