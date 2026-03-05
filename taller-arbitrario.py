@@ -261,7 +261,7 @@ with st.sidebar:
     json_loaded = st.session_state.loaded_json is not None
 
     if json_loaded:
-        if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
+        if st.button("Quitar JSON (volver a modo diseño)", use_container_width=True):
             st.session_state.loaded_json = None
             st.session_state.model = init_model()
             st.rerun()
@@ -269,7 +269,7 @@ with st.sidebar:
     # ------------------------------
     # BOTÓN BORRAR TODO
     # ------------------------------
-    if st.button("🧨 Borrar todo y empezar taller nuevo", use_container_width=True):
+    if st.button("Borrar todo y empezar taller nuevo", use_container_width=True):
 
         # quitar JSON cargado
         st.session_state.loaded_json = None
