@@ -273,20 +273,6 @@ with st.sidebar:
             st.session_state["uploader_json"] = None
             st.rerun()
 
-    if st.button("🧨 Borrar todo y empezar taller nuevo", use_container_width=True):
-        st.session_state.loaded_json = None
-        st.session_state.model = init_model()
-        st.session_state["uploader_json"] = None
-
-        keys_to_delete = [
-            k for k in list(st.session_state.keys())
-            if k.startswith(("k_", "lbl_", "gap_", "peso_", "notes_"))
-        ]
-        for k in keys_to_delete:
-            del st.session_state[k]
-
-        st.rerun()
-
     st.divider()
 
     st.subheader("Controles globales")
