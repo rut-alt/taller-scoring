@@ -326,7 +326,7 @@ for i, var in enumerate(vars_list):
                     f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
                     f"- Interpretación: la variable es **{discr_label}** (cuanto menor es Δx, menos separa perfiles).\n\n"
                     "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** y **x(peor)=1−Σ gaps**.\n\n"
-                    "👉 **No recomendado** si buscas máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
+                    "**No recomendado** si buscas máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
                     "para que la peor categoría sea **x=0** y la variable use toda la escala **0–1**."
                 )
 
