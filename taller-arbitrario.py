@@ -1,7 +1,6 @@
 # app.py
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
 from typing import List, Dict
 
@@ -33,8 +32,10 @@ def normalize_list_len(values: List[float], n: int, fill: float = 0.0) -> List[f
 def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     """
     Construye x(j) con x(k)=1 y gaps (penalizaciones) no negativas entre categorías.
+
     gaps: lista de longitud k-1, interpretada como:
       gap_t = caída al pasar de (t+1) -> t (de mejor a peor), acumulativa.
+
     Entonces:
       x_k = 1
       x_{k-1} = 1 - gap_{k-1}
@@ -78,10 +79,7 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
     return {"x_values": xs, "gaps_eff": gaps, "sum_gaps": s_eff, "remaining": remaining}
 
 
-def generate_scale_fixed_weight(
-    peso_pct: float,
-    x_values: List[float],
-) -> Dict:
+def generate_scale_fixed_weight(peso_pct: float, x_values: List[float]) -> Dict:
     k = len(x_values)
     xs = [clamp01(x) for x in x_values]
 
@@ -183,12 +181,7 @@ def init_model():
             }
         )
 
-    return {
-        "variables": variables,
-        "settings": {
-            "cap_mode": "clip",
-        },
-    }
+    return {"variables": variables, "settings": {"cap_mode": "clip"}}
 
 
 if "model" not in st.session_state:
@@ -197,8 +190,7 @@ if "model" not in st.session_state:
 
 def normalize_labels(var: dict):
     k = int(var["k"])
-    labels = normalize_list_len(var.get("labels") or [], k, fill="")
-    var["labels"] = labels
+    var["labels"] = normalize_list_len(var.get("labels") or [], k, fill="")
 
 
 def normalize_gaps(var: dict):
@@ -248,7 +240,6 @@ with st.sidebar:
 # =========================
 
 vars_list = st.session_state.model["variables"]
-
 col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
@@ -290,7 +281,6 @@ for i, var in enumerate(vars_list):
             st.markdown("**Reparto del saldo (gaps) — x(mejor)=1 fijo**")
             st.caption("Los gaps son las caídas entre categorías al bajar de nivel. Σ gaps ≤ 1.")
 
-            # Editas k-1 gaps
             lg, rg = st.columns(2)
             for t in range(1, int(var["k"])):  # 1..k-1
                 target = lg if t % 2 == 1 else rg
@@ -303,33 +293,48 @@ for i, var in enumerate(vars_list):
                     key=f"gap_{var['id']}_{t}",
                 )
 
-            # >>> AVISOS <<<
+            # Aviso preventivo si se pasan antes de convertir (informativo)
             raw_gaps = [float(g) for g in (var.get("gaps") or [])]
             sum_raw = sum(raw_gaps)
-
-            if any(g > 1.0 for g in raw_gaps):
-                st.error(
-                    "⚠️ Hay algún gap > 1. Recuerda: los gaps se introducen en escala 0–1. "
-                    "Ejemplo: 0.40 = 40% del saldo."
-                )
-
             if sum_raw > 1.0 + 1e-12:
                 st.warning(
                     f"⚠️ Te has pasado de saldo: Σ gaps = {sum_raw:.3f} (> 1). "
                     f"Se aplicará el modo '{cap_mode}' para ajustarlo."
                 )
-            # <<< AVISOS <<<
 
-            # Convertimos gaps -> x
+            # Convertimos gaps -> x (aquí ya aplica clip/scale si hacía falta)
             conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
             xs = conv["x_values"]
-            var["gaps"] = conv["gaps_eff"]  # por si hubo clip/scale
-                        # === Aviso de discriminación de la variable ===
+            var["gaps"] = conv["gaps_eff"]
+
+            # === Aviso de discriminación (saldo sin usar) ===
             eps = 1e-6
             x_min = min(xs)
-            discr_range = 1.0 - x_min  # porque x_max = 1
+            discr_range = 1.0 - x_min  # x_max=1 fijo
 
-            st.info(f"Saldo usado: {conv['sum_gaps']:.3f} | Saldo restante: {conv['remaining']:.3f} | x(mejor)=1")
+            if discr_range >= 0.80:
+                discr_label = "muy discriminatoria"
+            elif discr_range >= 0.50:
+                discr_label = "medianamente discriminatoria"
+            else:
+                discr_label = "poco discriminatoria"
+
+            if conv["sum_gaps"] < 1.0 - eps:
+                st.warning(
+                    "🟡 **Variable menos discriminatoria (Σ gaps < 1)**\n\n"
+                    f"- **Σ gaps usado** = {conv['sum_gaps']:.3f} → **saldo sin usar** = {conv['remaining']:.3f}\n"
+                    f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
+                    f"- Interpretación: la variable es **{discr_label}** (cuanto menor es Δx, menos separa perfiles).\n\n"
+                    "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** y **x(peor)=1−Σ gaps**.\n\n"
+                    "👉 **No recomendado** si buscas máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
+                    "para que la peor categoría sea **x=0** y la variable use toda la escala **0–1**."
+                )
+
+            st.info(
+                f"Saldo usado: {conv['sum_gaps']:.3f} | "
+                f"Saldo restante: {conv['remaining']:.3f} | "
+                f"x(mejor)=1"
+            )
 
             var["notes"] = st.text_area(
                 "Notas / criterio (opcional)",
@@ -343,60 +348,26 @@ for i, var in enumerate(vars_list):
             st.caption(f"Máximo de la variable (mejor): {peso_pct:.2f}% (porque x=1)")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
+# =========================
+# Resumen del modelo
+# =========================
 st.divider()
 st.subheader("Resumen del modelo")
+
 summary = []
 for v in st.session_state.model["variables"]:
     k = int(v["k"])
-    conv = gaps_to_x(k=k, gaps=v.get("gaps") or [], cap_mode=cap_mode)
-    xs = conv["x_values"]
+    conv_s = gaps_to_x(k=k, gaps=v.get("gaps") or [], cap_mode=cap_mode)
+    xs_s = conv_s["x_values"]
     summary.append(
         {
             "Variable": v["name"],
             "Peso %": round(float(v.get("peso_pct", 0.0)), 2),
             "k": k,
-            "Σ gaps": round(conv["sum_gaps"], 3),
-            "x (preview)": " | ".join([f"{x:.2f}" for x in xs[:3]]) + (" ..." if len(xs) > 3 else ""),
+            "Σ gaps": round(conv_s["sum_gaps"], 3),
+            "Saldo restante": round(conv_s["remaining"], 3),
+            "x (preview)": " | ".join([f"{x:.2f}" for x in xs_s[:3]]) + (" ..." if len(xs_s) > 3 else ""),
         }
     )
 
-            # === Aviso de discriminación (Σ gaps != 1) ===
-            eps = 1e-6
-            x_min = min(xs)
-            discr_range = 1.0 - x_min  # como x_max=1 fijo
-
-            # Clasificación simple (ajusta umbrales si quieres)
-            if discr_range >= 0.80:
-                discr_label = "muy discriminatoria"
-            elif discr_range >= 0.50:
-                discr_label = "medianamente discriminatoria"
-            else:
-                discr_label = "poco discriminatoria"
-
-            # Si no se usa todo el saldo (Σ gaps < 1) => pierde discriminación
-            if conv["sum_gaps"] < 1.0 - eps:
-                st.warning(
-                    "🟡 **Variable menos discriminatoria (Σ gaps < 1)**\n\n"
-                    f"- **Σ gaps (usado)** = {conv['sum_gaps']:.3f} → **saldo sin usar** = {conv['remaining']:.3f}\n"
-                    f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
-                    f"- Interpretación: la variable es **{discr_label}** (cuanto menor es Δx, menos separa perfiles).\n\n"
-                    "👉 **No recomendado** en scoring si quieres máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
-                    "para que la peor categoría llegue a **x=0** y la variable use toda la escala 0–1."
-                )
-
-            # Si se pasa de saldo (Σ gaps > 1) ya lo avisas antes, pero aquí puedes reforzarlo si quieres
-            elif conv["sum_gaps"] > 1.0 + eps:
-                st.warning(
-                    "⚠️ **Σ gaps > 1**: se ha ajustado con el modo seleccionado "
-                    f"('{cap_mode}'). Rango final Δx = **{discr_range:.3f}**."
-                )
-
-            # Si está perfecto (Σ gaps == 1)
-            else:
-                st.success(
-                    "🟢 **Escala completa (Σ gaps = 1)**\n\n"
-                    f"- **Rango de discriminación** Δx = **{discr_range:.3f}** (máximo)\n"
-                    "- La peor categoría llega a **x=0** y la mejor queda en **x=1**."
-                )
-            # === Fin aviso discriminación ===
 st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
