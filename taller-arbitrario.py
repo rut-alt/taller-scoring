@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 import json
@@ -21,7 +20,7 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def normalize_list_len(values: List[float], n: int, fill: float = 0.0) -> List[float]:
+def normalize_list_len(values: List[float], n: int, fill=0.0) -> List:
     vals = list(values or [])
     if len(vals) < n:
         vals += [fill] * (n - len(vals))
@@ -48,7 +47,7 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
 
     if s > 1.0 + 1e-12:
         if cap_mode == "scale":
-            gaps = [g / s for g in gaps]  # ahora suma 1
+            gaps = [g / s for g in gaps]
         else:
             excess = s - 1.0
             gaps[-1] = max(0.0, gaps[-1] - excess)
@@ -96,21 +95,13 @@ def scale_to_df(scale: dict, labels: List[str]) -> pd.DataFrame:
         rows.append(
             {
                 "K (j)": r.j,
-                "Etiqueta (texto libre)": labels[idx] if idx < len(labels) else "",
+                "Etiqueta": labels[idx] if idx < len(labels) else "",
                 "x(j)": r.x,
                 "Suma al score total % (peso*x)": r.contribution_pct,
                 "Δ vs prev %": r.delta_from_prev_pct,
             }
         )
     return pd.DataFrame(rows)
-
-
-# =========================
-# Streamlit App
-# =========================
-
-st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
-st.title("Taller scoring — estructura (K/etiquetas) fija por JSON + pesos/gaps editables")
 
 
 def init_model():
@@ -151,11 +142,11 @@ def init_model():
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
         preset_labels = ["", "", ""]
-        preset_gaps = [0.5, 0.5]  # suma 1 → x=[0,0.5,1]
+        preset_gaps = [0.5, 0.5]
 
         if "Nº de Ramos con nosotros" in name:
             preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            preset_gaps = [0.4, 0.6]  # x=[0,0.6,1]
+            preset_gaps = [0.4, 0.6]
 
         variables.append(
             {
@@ -183,11 +174,37 @@ def normalize_gaps(var: dict):
     var["gaps"] = [max(0.0, float(g)) for g in gaps]
 
 
+def reset_variable_widget_state():
+    keys_to_delete = []
+    for key in list(st.session_state.keys()):
+        if (
+            str(key).startswith("peso_")
+            or str(key).startswith("k_")
+            or str(key).startswith("lbl_")
+            or str(key).startswith("gap_")
+            or str(key).startswith("notes_")
+        ):
+            keys_to_delete.append(key)
+
+    for key in keys_to_delete:
+        del st.session_state[key]
+
+
 def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
     """
-    Aplica el JSON a la estructura del modelo:
-      - fija k, labels, gaps iniciales, notes, cap_mode, pesos (si vienen)
-    OJO: aunque cargue gaps, en la UI dejaremos los gaps EDITABLES.
+    Aplica el JSON al modelo:
+      - fija pesos
+      - fija k
+      - fija labels
+      - carga gaps iniciales
+      - carga notes
+      - carga cap_mode si viene en settings
+
+    Con JSON cargado:
+      - pesos bloqueados
+      - k bloqueado
+      - labels bloqueadas
+      - solo gaps editables
     """
     if not isinstance(loaded, dict):
         return model_state
@@ -207,13 +224,14 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
             continue
 
         peso = float(v.get("peso_pct", 0.0))
-        k = int(v.get("k", 3))
+        k = max(2, int(v.get("k", 3)))
         labels = list(v.get("labels") or [])
         gaps = list(v.get("gaps") or [])
         notes = str(v.get("notes", "") or "")
 
         labels = normalize_list_len(labels, k, fill="")
         gaps = normalize_list_len(gaps, k - 1, fill=0.0)
+        gaps = [max(0.0, float(g)) for g in gaps]
 
         new_vars.append(
             {
@@ -231,9 +249,17 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
     return model_state
 
 
-# -------------------------
+# =========================
+# Streamlit App
+# =========================
+
+st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
+st.title("Taller scoring — estructura fija por JSON + solo gaps editables")
+
+
+# =========================
 # Session init
-# -------------------------
+# =========================
 if "model" not in st.session_state:
     st.session_state.model = init_model()
 
@@ -249,18 +275,20 @@ with st.sidebar:
 
     st.subheader("Modo de trabajo")
 
-    # KEY para poder resetear el uploader
     uploaded_json = st.file_uploader(
-        "📌 Cargar modelo JSON (bloquea K/etiquetas)",
+        "📌 Cargar modelo JSON (bloquea pesos/K/etiquetas)",
         type=["json"],
         key="uploader_json",
     )
 
     if uploaded_json is not None:
         try:
-            st.session_state.loaded_json = json.load(uploaded_json)
-            st.session_state.model = apply_json_to_model(st.session_state.model, st.session_state.loaded_json)
-            st.success("Modelo JSON cargado. K/etiquetas quedan bloqueados. (Pesos y gaps editables)")
+            loaded = json.load(uploaded_json)
+            st.session_state.loaded_json = loaded
+            st.session_state.model = apply_json_to_model(st.session_state.model, loaded)
+            reset_variable_widget_state()
+            st.success("Modelo JSON cargado. Pesos, K y etiquetas quedan bloqueados. Solo gaps editables.")
+            st.rerun()
         except Exception as e:
             st.error(f"No pude leer el JSON: {e}")
 
@@ -270,6 +298,7 @@ with st.sidebar:
         if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
             st.session_state.loaded_json = None
             st.session_state.model = init_model()
+            reset_variable_widget_state()
             st.session_state["uploader_json"] = None
             st.rerun()
 
@@ -277,10 +306,11 @@ with st.sidebar:
 
     st.subheader("Controles globales")
 
+    current_cap_mode = st.session_state.model["settings"].get("cap_mode", "clip")
     st.session_state.model["settings"]["cap_mode"] = st.selectbox(
         "Si te pasas del saldo (Σ gaps > 1):",
         options=["clip", "scale"],
-        index=0 if st.session_state.model["settings"].get("cap_mode", "clip") == "clip" else 1,
+        index=0 if current_cap_mode == "clip" else 1,
         help=(
             "clip = recorta el último gap para que Σ=1.\n"
             "scale = reescala todos los gaps proporcionalmente para que Σ=1."
@@ -291,13 +321,13 @@ with st.sidebar:
     total_pesos = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
     st.metric("Suma pesos (%)", f"{total_pesos:.2f}%")
 
-    st.caption("Con JSON: K/etiquetas bloqueados. Pesos y gaps editables.")
+    st.caption("Con JSON: pesos, K y etiquetas bloqueados. Solo gaps editables.")
 
     st.divider()
-    st.caption("Exporta el estado actual del taller (estructura + pesos + gaps actuales).")
+    st.caption("Exporta el estado actual del taller (estructura fija + gaps actualizados).")
     st.download_button(
         "⬇️ Descargar JSON del taller",
-        data=pd.Series(st.session_state.model).to_json(force_ascii=False, indent=2).encode("utf-8"),
+        data=json.dumps(st.session_state.model, ensure_ascii=False, indent=2).encode("utf-8"),
         file_name="taller_scoring.json",
         mime="application/json",
         use_container_width=True,
@@ -323,9 +353,8 @@ for i, var in enumerate(vars_list):
             st.subheader(var["name"])
 
             if json_loaded:
-                st.info("🔒 Estructura bloqueada por JSON: K y etiquetas fijas. (Pesos y gaps editables)")
+                st.info("🔒 Estructura bloqueada por JSON: peso, K y etiquetas fijas. Solo gaps editables.")
 
-            # PESO: siempre editable
             var["peso_pct"] = float(
                 st.number_input(
                     "Peso (%)",
@@ -334,10 +363,10 @@ for i, var in enumerate(vars_list):
                     value=float(var.get("peso_pct", 0.0)),
                     step=0.5,
                     key=f"peso_{var['id']}",
+                    disabled=json_loaded,
                 )
             )
 
-            # K: bloqueable
             var["k"] = int(
                 st.number_input(
                     "k (nº de subcategorías)",
@@ -346,14 +375,14 @@ for i, var in enumerate(vars_list):
                     value=int(var["k"]),
                     step=1,
                     key=f"k_{var['id']}",
-                    disabled=json_loaded,  # ✅ solo esto
+                    disabled=json_loaded,
                 )
             )
+
             normalize_labels(var)
             normalize_gaps(var)
 
-            # Etiquetas: bloqueables
-            st.markdown("**Etiquetas por categoría (texto libre)**")
+            st.markdown("**Etiquetas por categoría**")
             left, right = st.columns(2)
             for j in range(1, int(var["k"]) + 1):
                 target = left if j % 2 == 1 else right
@@ -361,10 +390,9 @@ for i, var in enumerate(vars_list):
                     f"K = {j}",
                     value=var["labels"][j - 1],
                     key=f"lbl_{var['id']}_{j}",
-                    disabled=json_loaded,  # ✅ solo esto
+                    disabled=json_loaded,
                 )
 
-            # GAPS: EDITABLES SIEMPRE
             st.markdown("**Reparto del saldo (gaps) — x(mejor)=1 fijo**")
             st.caption("Los gaps son las caídas entre categorías al bajar de nivel. Σ gaps ≤ 1.")
 
@@ -378,7 +406,7 @@ for i, var in enumerate(vars_list):
                     value=float(var["gaps"][t - 1]),
                     step=0.01,
                     key=f"gap_{var['id']}_{t}",
-                    disabled=False,  # ✅ importante
+                    disabled=False,
                 )
 
             raw_gaps = [float(g) for g in (var.get("gaps") or [])]
@@ -393,10 +421,9 @@ for i, var in enumerate(vars_list):
             xs = conv["x_values"]
             var["gaps"] = conv["gaps_eff"]
 
-            # Aviso discriminación por saldo sin usar
             eps = 1e-6
             x_min = min(xs)
-            discr_range = 1.0 - x_min  # x_max=1 fijo
+            discr_range = 1.0 - x_min
 
             if discr_range >= 0.80:
                 discr_label = "muy discriminatoria"
@@ -410,8 +437,9 @@ for i, var in enumerate(vars_list):
                     "🟡 **Variable menos discriminatoria (Σ gaps < 1)**\n\n"
                     f"- **Σ gaps usado** = {conv['sum_gaps']:.3f} → **saldo sin usar** = {conv['remaining']:.3f}\n"
                     f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
-                    f"- Interpretación: la variable es **{discr_label}** (cuanto menor es Δx, menos separa perfiles).\n\n"
-                    "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** y **x(peor)=1−Σ gaps**.\n\n"
+                    f"- Interpretación: la variable es **{discr_label}**.\n\n"
+                    "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** "
+                    "y **x(peor)=1−Σ gaps**.\n\n"
                     "**No recomendado** si buscas máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
                     "para que la peor categoría sea **x=0** y la variable use toda la escala **0–1**."
                 )
@@ -422,12 +450,11 @@ for i, var in enumerate(vars_list):
                 f"x(mejor)=1"
             )
 
-            # Notas: yo las dejo editables siempre (si quieres bloquearlas, pon disabled=json_loaded)
             var["notes"] = st.text_area(
                 "Notas / criterio (opcional)",
                 value=var.get("notes", ""),
                 key=f"notes_{var['id']}",
-                disabled=False,
+                disabled=json_loaded,
             )
 
             scale = generate_scale_fixed_weight(peso_pct=float(var["peso_pct"]), x_values=xs)
@@ -448,14 +475,16 @@ for v in st.session_state.model["variables"]:
     k = int(v["k"])
     conv_s = gaps_to_x(k=k, gaps=v.get("gaps") or [], cap_mode=cap_mode)
     xs_s = conv_s["x_values"]
+
     summary.append(
         {
             "Variable": v["name"],
             "Peso %": round(float(v.get("peso_pct", 0.0)), 2),
             "k": k,
+            "Etiquetas": " | ".join([str(lbl) for lbl in v.get("labels", [])]),
             "Σ gaps": round(conv_s["sum_gaps"], 3),
             "Saldo restante": round(conv_s["remaining"], 3),
-            "x (preview)": " | ".join([f"{x:.2f}" for x in xs_s[:3]]) + (" ..." if len(xs_s) > 3 else ""),
+            "x (preview)": " | ".join([f"{x:.2f}" for x in xs_s]),
         }
     )
 
