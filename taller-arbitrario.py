@@ -266,13 +266,6 @@ with st.sidebar:
 
     json_loaded = st.session_state.loaded_json is not None
 
-    if json_loaded:
-        if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
-            st.session_state.loaded_json = None
-            st.session_state.model = init_model()
-            st.session_state["uploader_json"] = None
-            st.rerun()
-
     st.divider()
 
     st.subheader("Controles globales")
