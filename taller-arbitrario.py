@@ -433,12 +433,9 @@ for i, var in enumerate(vars_list):
                     f"Se aplicará el modo '{cap_mode}' para ajustarlo."
                 )
 
-            conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
-            xs = conv["x_values"]
-            var["gaps"] = conv["gaps_eff"]
-
-            for t in range(1, int(var["k"])):
-                st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
+conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
+xs = conv["x_values"]
+var["gaps"] = conv["gaps_eff"]
 
             eps = 1e-6
             x_min = min(xs)
