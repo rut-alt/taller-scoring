@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict, List
 
 import pandas as pd
 import streamlit as st
@@ -20,7 +20,7 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
-def normalize_list_len(values: List[float], n: int, fill=0.0) -> List:
+def normalize_list_len(values: List, n: int, fill=0.0) -> List:
     vals = list(values or [])
     if len(vals) < n:
         vals += [fill] * (n - len(vals))
@@ -30,14 +30,6 @@ def normalize_list_len(values: List[float], n: int, fill=0.0) -> List:
 
 
 def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
-    """
-    Construye x(j) con x(k)=1 y gaps (penalizaciones) no negativas entre categorías.
-
-    Restricción deseada: sum(gaps) <= 1 (saldo).
-    cap_mode:
-      - "clip": si suma>1, recorta el último gap para que suma=1
-      - "scale": si suma>1, reescala todos los gaps para que suma=1
-    """
     if k < 2:
         raise ValueError("k debe ser >= 2.")
 
@@ -63,7 +55,12 @@ def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
         xs[idx] = clamp01(1.0 - acc)
     xs[-1] = 1.0
 
-    return {"x_values": xs, "gaps_eff": gaps, "sum_gaps": s_eff, "remaining": remaining}
+    return {
+        "x_values": xs,
+        "gaps_eff": gaps,
+        "sum_gaps": s_eff,
+        "remaining": remaining,
+    }
 
 
 def generate_scale_fixed_weight(peso_pct: float, x_values: List[float]) -> Dict:
@@ -174,38 +171,7 @@ def normalize_gaps(var: dict):
     var["gaps"] = [max(0.0, float(g)) for g in gaps]
 
 
-def reset_variable_widget_state():
-    keys_to_delete = []
-    for key in list(st.session_state.keys()):
-        if (
-            str(key).startswith("peso_")
-            or str(key).startswith("k_")
-            or str(key).startswith("lbl_")
-            or str(key).startswith("gap_")
-            or str(key).startswith("notes_")
-        ):
-            keys_to_delete.append(key)
-
-    for key in keys_to_delete:
-        del st.session_state[key]
-
-
 def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
-    """
-    Aplica el JSON al modelo:
-      - fija pesos
-      - fija k
-      - fija labels
-      - carga gaps iniciales
-      - carga notes
-      - carga cap_mode si viene en settings
-
-    Con JSON cargado:
-      - pesos bloqueados
-      - k bloqueado
-      - labels bloqueadas
-      - solo gaps editables
-    """
     if not isinstance(loaded, dict):
         return model_state
 
@@ -225,20 +191,17 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
 
         peso = float(v.get("peso_pct", 0.0))
         k = max(2, int(v.get("k", 3)))
-        labels = list(v.get("labels") or [])
-        gaps = list(v.get("gaps") or [])
-        notes = str(v.get("notes", "") or "")
-
-        labels = normalize_list_len(labels, k, fill="")
-        gaps = normalize_list_len(gaps, k - 1, fill=0.0)
+        labels = normalize_list_len(list(v.get("labels") or []), k, fill="")
+        gaps = normalize_list_len(list(v.get("gaps") or []), k - 1, fill=0.0)
         gaps = [max(0.0, float(g)) for g in gaps]
+        notes = str(v.get("notes", "") or "")
 
         new_vars.append(
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
-                "peso_pct": float(peso),
-                "k": int(k),
+                "peso_pct": peso,
+                "k": k,
                 "labels": labels,
                 "gaps": gaps,
                 "notes": notes,
@@ -249,6 +212,33 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
     return model_state
 
 
+def clear_variable_widget_keys():
+    prefixes = ("peso_", "k_", "lbl_", "gap_", "notes_")
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(prefixes):
+            del st.session_state[key]
+
+
+def hydrate_widget_state_from_model(model_state: dict):
+    """
+    Copia los valores del modelo a las keys reales de los widgets.
+    Esto es lo que hace que se VEAN las etiquetas cargadas del JSON.
+    """
+    for var in model_state["variables"]:
+        normalize_labels(var)
+        normalize_gaps(var)
+
+        st.session_state[f"peso_{var['id']}"] = float(var["peso_pct"])
+        st.session_state[f"k_{var['id']}"] = int(var["k"])
+        st.session_state[f"notes_{var['id']}"] = str(var.get("notes", ""))
+
+        for j in range(1, int(var["k"]) + 1):
+            st.session_state[f"lbl_{var['id']}_{j}"] = str(var["labels"][j - 1])
+
+        for t in range(1, int(var["k"])):
+            st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
+
+
 # =========================
 # Streamlit App
 # =========================
@@ -256,15 +246,14 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
 st.set_page_config(page_title="Taller scoring por tarjetas", layout="wide")
 st.title("Taller scoring — estructura fija por JSON + solo gaps editables")
 
-
-# =========================
-# Session init
-# =========================
 if "model" not in st.session_state:
     st.session_state.model = init_model()
 
 if "loaded_json" not in st.session_state:
     st.session_state.loaded_json = None
+
+if "json_mode" not in st.session_state:
+    st.session_state.json_mode = False
 
 
 # =========================
@@ -272,7 +261,6 @@ if "loaded_json" not in st.session_state:
 # =========================
 with st.sidebar:
     st.image("LOGOTIPO-AES-05.png", use_container_width=True)
-
     st.subheader("Modo de trabajo")
 
     uploaded_json = st.file_uploader(
@@ -281,29 +269,34 @@ with st.sidebar:
         key="uploader_json",
     )
 
-    if uploaded_json is not None:
+    if uploaded_json is not None and not st.session_state.json_mode:
         try:
             loaded = json.load(uploaded_json)
             st.session_state.loaded_json = loaded
             st.session_state.model = apply_json_to_model(st.session_state.model, loaded)
-            reset_variable_widget_state()
+
+            clear_variable_widget_keys()
+            hydrate_widget_state_from_model(st.session_state.model)
+
+            st.session_state.json_mode = True
             st.success("Modelo JSON cargado. Pesos, K y etiquetas quedan bloqueados. Solo gaps editables.")
             st.rerun()
         except Exception as e:
             st.error(f"No pude leer el JSON: {e}")
 
-    json_loaded = st.session_state.loaded_json is not None
+    json_loaded = st.session_state.loaded_json is not None and st.session_state.json_mode
 
     if json_loaded:
         if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
             st.session_state.loaded_json = None
             st.session_state.model = init_model()
-            reset_variable_widget_state()
+            clear_variable_widget_keys()
+            hydrate_widget_state_from_model(st.session_state.model)
+            st.session_state.json_mode = False
             st.session_state["uploader_json"] = None
             st.rerun()
 
     st.divider()
-
     st.subheader("Controles globales")
 
     current_cap_mode = st.session_state.model["settings"].get("cap_mode", "clip")
@@ -320,11 +313,10 @@ with st.sidebar:
     st.divider()
     total_pesos = sum(float(v.get("peso_pct", 0.0)) for v in st.session_state.model["variables"])
     st.metric("Suma pesos (%)", f"{total_pesos:.2f}%")
-
     st.caption("Con JSON: pesos, K y etiquetas bloqueados. Solo gaps editables.")
 
     st.divider()
-    st.caption("Exporta el estado actual del taller (estructura fija + gaps actualizados).")
+    st.caption("Exporta el estado actual del taller.")
     st.download_button(
         "⬇️ Descargar JSON del taller",
         data=json.dumps(st.session_state.model, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -332,6 +324,27 @@ with st.sidebar:
         mime="application/json",
         use_container_width=True,
     )
+
+
+# Si no hay JSON, sincronizamos una vez al arrancar para que el estado del widget exista.
+if not st.session_state.json_mode:
+    for var in st.session_state.model["variables"]:
+        normalize_labels(var)
+        normalize_gaps(var)
+        if f"peso_{var['id']}" not in st.session_state:
+            st.session_state[f"peso_{var['id']}"] = float(var["peso_pct"])
+        if f"k_{var['id']}" not in st.session_state:
+            st.session_state[f"k_{var['id']}"] = int(var["k"])
+        if f"notes_{var['id']}" not in st.session_state:
+            st.session_state[f"notes_{var['id']}"] = str(var.get("notes", ""))
+        for j in range(1, int(var["k"]) + 1):
+            key = f"lbl_{var['id']}_{j}"
+            if key not in st.session_state:
+                st.session_state[key] = str(var["labels"][j - 1])
+        for t in range(1, int(var["k"])):
+            key = f"gap_{var['id']}_{t}"
+            if key not in st.session_state:
+                st.session_state[key] = float(var["gaps"][t - 1])
 
 
 # =========================
@@ -342,12 +355,9 @@ col1, col2 = st.columns(2, gap="large")
 cols = [col1, col2]
 
 cap_mode = st.session_state.model["settings"].get("cap_mode", "clip")
-json_loaded = st.session_state.loaded_json is not None
+json_loaded = st.session_state.loaded_json is not None and st.session_state.json_mode
 
 for i, var in enumerate(vars_list):
-    normalize_labels(var)
-    normalize_gaps(var)
-
     with cols[i % 2]:
         with st.container(border=True):
             st.subheader(var["name"])
@@ -355,29 +365,30 @@ for i, var in enumerate(vars_list):
             if json_loaded:
                 st.info("🔒 Estructura bloqueada por JSON: peso, K y etiquetas fijas. Solo gaps editables.")
 
-            var["peso_pct"] = float(
-                st.number_input(
-                    "Peso (%)",
-                    min_value=0.0,
-                    max_value=100.0,
-                    value=float(var.get("peso_pct", 0.0)),
-                    step=0.5,
-                    key=f"peso_{var['id']}",
-                    disabled=json_loaded,
-                )
+            peso_key = f"peso_{var['id']}"
+            k_key = f"k_{var['id']}"
+            notes_key = f"notes_{var['id']}"
+
+            st.number_input(
+                "Peso (%)",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.5,
+                key=peso_key,
+                disabled=json_loaded,
             )
 
-            var["k"] = int(
-                st.number_input(
-                    "k (nº de subcategorías)",
-                    min_value=2,
-                    max_value=10,
-                    value=int(var["k"]),
-                    step=1,
-                    key=f"k_{var['id']}",
-                    disabled=json_loaded,
-                )
+            st.number_input(
+                "k (nº de subcategorías)",
+                min_value=2,
+                max_value=10,
+                step=1,
+                key=k_key,
+                disabled=json_loaded,
             )
+
+            var["peso_pct"] = float(st.session_state[peso_key])
+            var["k"] = int(st.session_state[k_key])
 
             normalize_labels(var)
             normalize_gaps(var)
@@ -386,12 +397,16 @@ for i, var in enumerate(vars_list):
             left, right = st.columns(2)
             for j in range(1, int(var["k"]) + 1):
                 target = left if j % 2 == 1 else right
-                var["labels"][j - 1] = target.text_input(
+                lbl_key = f"lbl_{var['id']}_{j}"
+                if lbl_key not in st.session_state:
+                    st.session_state[lbl_key] = var["labels"][j - 1]
+
+                target.text_input(
                     f"K = {j}",
-                    value=var["labels"][j - 1],
-                    key=f"lbl_{var['id']}_{j}",
+                    key=lbl_key,
                     disabled=json_loaded,
                 )
+                var["labels"][j - 1] = st.session_state[lbl_key]
 
             st.markdown("**Reparto del saldo (gaps) — x(mejor)=1 fijo**")
             st.caption("Los gaps son las caídas entre categorías al bajar de nivel. Σ gaps ≤ 1.")
@@ -399,17 +414,21 @@ for i, var in enumerate(vars_list):
             lg, rg = st.columns(2)
             for t in range(1, int(var["k"])):
                 target = lg if t % 2 == 1 else rg
-                var["gaps"][t - 1] = target.number_input(
+                gap_key = f"gap_{var['id']}_{t}"
+                if gap_key not in st.session_state:
+                    st.session_state[gap_key] = float(var["gaps"][t - 1])
+
+                target.number_input(
                     f"gap {t} (caída entre K={t} y K={t+1})",
                     min_value=0.0,
                     max_value=1.0,
-                    value=float(var["gaps"][t - 1]),
                     step=0.01,
-                    key=f"gap_{var['id']}_{t}",
+                    key=gap_key,
                     disabled=False,
                 )
+                var["gaps"][t - 1] = float(st.session_state[gap_key])
 
-            raw_gaps = [float(g) for g in (var.get("gaps") or [])]
+            raw_gaps = [float(g) for g in var.get("gaps") or []]
             sum_raw = sum(raw_gaps)
             if sum_raw > 1.0 + 1e-12:
                 st.warning(
@@ -420,6 +439,10 @@ for i, var in enumerate(vars_list):
             conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
             xs = conv["x_values"]
             var["gaps"] = conv["gaps_eff"]
+
+            # Reflejar gaps efectivos otra vez en widgets
+            for t in range(1, int(var["k"])):
+                st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
 
             eps = 1e-6
             x_min = min(xs)
@@ -450,12 +473,12 @@ for i, var in enumerate(vars_list):
                 f"x(mejor)=1"
             )
 
-            var["notes"] = st.text_area(
+            st.text_area(
                 "Notas / criterio (opcional)",
-                value=var.get("notes", ""),
-                key=f"notes_{var['id']}",
+                key=notes_key,
                 disabled=json_loaded,
             )
+            var["notes"] = st.session_state[notes_key]
 
             scale = generate_scale_fixed_weight(peso_pct=float(var["peso_pct"]), x_values=xs)
             df = scale_to_df(scale, var["labels"])
