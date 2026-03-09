@@ -30,6 +30,15 @@ def normalize_list_len(values: List, n: int, fill=0.0) -> List:
 
 
 def gaps_to_x(k: int, gaps: List[float], cap_mode: str = "clip") -> Dict:
+    """
+    Construye x(j) con x(k)=1 y gaps entre categorías.
+
+    - x(mejor) = 1
+    - sum(gaps) <= 1 idealmente
+    - si sum(gaps) > 1:
+        * clip: recorta el último gap
+        * scale: reescala todos proporcionalmente
+    """
     if k < 2:
         raise ValueError("k debe ser >= 2.")
 
@@ -138,21 +147,14 @@ def init_model():
 
     variables = []
     for idx, (name, peso_pct) in enumerate(raw_pct, start=1):
-        preset_labels = ["", "", ""]
-        preset_gaps = [0.5, 0.5]
-
-        if "Nº de Ramos con nosotros" in name:
-            preset_labels = ["0 ramos", "1-2 ramos", "3 o más ramos"]
-            preset_gaps = [0.4, 0.6]
-
         variables.append(
             {
                 "id": f"var_{idx:02d}",
                 "name": name,
                 "peso_pct": float(peso_pct),
                 "k": 3,
-                "labels": preset_labels,
-                "gaps": preset_gaps,
+                "labels": ["", "", ""],
+                "gaps": [0.5, 0.5],
                 "notes": "",
             }
         )
@@ -172,15 +174,18 @@ def normalize_gaps(var: dict):
 
 
 def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
+    """
+    Sustituye TODO el modelo por el contenido del JSON.
+    """
     if not isinstance(loaded, dict):
         return model_state
 
     loaded_vars = loaded.get("variables") or []
-    if not loaded_vars:
+    if not isinstance(loaded_vars, list) or len(loaded_vars) == 0:
         return model_state
 
     settings = loaded.get("settings") or {}
-    if "cap_mode" in settings:
+    if "cap_mode" in settings and settings["cap_mode"] in ["clip", "scale"]:
         model_state["settings"]["cap_mode"] = settings["cap_mode"]
 
     new_vars = []
@@ -198,7 +203,7 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
 
         new_vars.append(
             {
-                "id": f"var_{idx:02d}",
+                "id": str(v.get("id", f"var_{idx:02d}")),
                 "name": name,
                 "peso_pct": peso,
                 "k": k,
@@ -208,11 +213,13 @@ def apply_json_to_model(model_state: dict, loaded: dict) -> dict:
             }
         )
 
-    model_state["variables"] = new_vars
+    if new_vars:
+        model_state["variables"] = new_vars
+
     return model_state
 
 
-def clear_variable_widget_keys():
+def clear_widget_keys():
     prefixes = ("peso_", "k_", "lbl_", "gap_", "notes_")
     for key in list(st.session_state.keys()):
         if str(key).startswith(prefixes):
@@ -221,8 +228,8 @@ def clear_variable_widget_keys():
 
 def hydrate_widget_state_from_model(model_state: dict):
     """
-    Copia los valores del modelo a las keys reales de los widgets.
-    Esto es lo que hace que se VEAN las etiquetas cargadas del JSON.
+    Copia el modelo a session_state para que los widgets
+    muestren exactamente lo que haya en el JSON.
     """
     for var in model_state["variables"]:
         normalize_labels(var)
@@ -269,13 +276,14 @@ with st.sidebar:
         key="uploader_json",
     )
 
-    if uploaded_json is not None and not st.session_state.json_mode:
+    if uploaded_json is not None:
         try:
             loaded = json.load(uploaded_json)
-            st.session_state.loaded_json = loaded
-            st.session_state.model = apply_json_to_model(st.session_state.model, loaded)
 
-            clear_variable_widget_keys()
+            st.session_state.loaded_json = loaded
+            st.session_state.model = apply_json_to_model(init_model(), loaded)
+
+            clear_widget_keys()
             hydrate_widget_state_from_model(st.session_state.model)
 
             st.session_state.json_mode = True
@@ -283,18 +291,6 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.error(f"No pude leer el JSON: {e}")
-
-    json_loaded = st.session_state.loaded_json is not None and st.session_state.json_mode
-
-    if json_loaded:
-        if st.button("🧽 Quitar JSON (volver a modo diseño)", use_container_width=True):
-            st.session_state.loaded_json = None
-            st.session_state.model = init_model()
-            clear_variable_widget_keys()
-            hydrate_widget_state_from_model(st.session_state.model)
-            st.session_state.json_mode = False
-            st.session_state["uploader_json"] = None
-            st.rerun()
 
     st.divider()
     st.subheader("Controles globales")
@@ -326,25 +322,27 @@ with st.sidebar:
     )
 
 
-# Si no hay JSON, sincronizamos una vez al arrancar para que el estado del widget exista.
-if not st.session_state.json_mode:
-    for var in st.session_state.model["variables"]:
-        normalize_labels(var)
-        normalize_gaps(var)
-        if f"peso_{var['id']}" not in st.session_state:
-            st.session_state[f"peso_{var['id']}"] = float(var["peso_pct"])
-        if f"k_{var['id']}" not in st.session_state:
-            st.session_state[f"k_{var['id']}"] = int(var["k"])
-        if f"notes_{var['id']}" not in st.session_state:
-            st.session_state[f"notes_{var['id']}"] = str(var.get("notes", ""))
-        for j in range(1, int(var["k"]) + 1):
-            key = f"lbl_{var['id']}_{j}"
-            if key not in st.session_state:
-                st.session_state[key] = str(var["labels"][j - 1])
-        for t in range(1, int(var["k"])):
-            key = f"gap_{var['id']}_{t}"
-            if key not in st.session_state:
-                st.session_state[key] = float(var["gaps"][t - 1])
+# Inicialización de widgets si aún no existen
+for var in st.session_state.model["variables"]:
+    normalize_labels(var)
+    normalize_gaps(var)
+
+    if f"peso_{var['id']}" not in st.session_state:
+        st.session_state[f"peso_{var['id']}"] = float(var["peso_pct"])
+    if f"k_{var['id']}" not in st.session_state:
+        st.session_state[f"k_{var['id']}"] = int(var["k"])
+    if f"notes_{var['id']}" not in st.session_state:
+        st.session_state[f"notes_{var['id']}"] = str(var.get("notes", ""))
+
+    for j in range(1, int(var["k"]) + 1):
+        key = f"lbl_{var['id']}_{j}"
+        if key not in st.session_state:
+            st.session_state[key] = str(var["labels"][j - 1])
+
+    for t in range(1, int(var["k"])):
+        key = f"gap_{var['id']}_{t}"
+        if key not in st.session_state:
+            st.session_state[key] = float(var["gaps"][t - 1])
 
 
 # =========================
@@ -398,6 +396,7 @@ for i, var in enumerate(vars_list):
             for j in range(1, int(var["k"]) + 1):
                 target = left if j % 2 == 1 else right
                 lbl_key = f"lbl_{var['id']}_{j}"
+
                 if lbl_key not in st.session_state:
                     st.session_state[lbl_key] = var["labels"][j - 1]
 
@@ -415,6 +414,7 @@ for i, var in enumerate(vars_list):
             for t in range(1, int(var["k"])):
                 target = lg if t % 2 == 1 else rg
                 gap_key = f"gap_{var['id']}_{t}"
+
                 if gap_key not in st.session_state:
                     st.session_state[gap_key] = float(var["gaps"][t - 1])
 
@@ -426,6 +426,7 @@ for i, var in enumerate(vars_list):
                     key=gap_key,
                     disabled=False,
                 )
+
                 var["gaps"][t - 1] = float(st.session_state[gap_key])
 
             raw_gaps = [float(g) for g in var.get("gaps") or []]
@@ -440,7 +441,6 @@ for i, var in enumerate(vars_list):
             xs = conv["x_values"]
             var["gaps"] = conv["gaps_eff"]
 
-            # Reflejar gaps efectivos otra vez en widgets
             for t in range(1, int(var["k"])):
                 st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
 
@@ -461,10 +461,9 @@ for i, var in enumerate(vars_list):
                     f"- **Σ gaps usado** = {conv['sum_gaps']:.3f} → **saldo sin usar** = {conv['remaining']:.3f}\n"
                     f"- **Rango real de discriminación** Δx = x_max − x_min = 1 − {x_min:.3f} = **{discr_range:.3f}**\n"
                     f"- Interpretación: la variable es **{discr_label}**.\n\n"
-                    "📐 **Nota:** en este esquema **Δx = Σ gaps**, porque **x(mejor)=1** "
-                    "y **x(peor)=1−Σ gaps**.\n\n"
-                    "**No recomendado** si buscas máxima separación: lo habitual es ajustar a **Σ gaps = 1** "
-                    "para que la peor categoría sea **x=0** y la variable use toda la escala **0–1**."
+                    "📐 **Nota:** en este esquema Δx = Σ gaps, porque x(mejor)=1 y x(peor)=1−Σ gaps.\n\n"
+                    "**No recomendado** si buscas máxima separación: lo habitual es ajustar a Σ gaps = 1 "
+                    "para que la peor categoría sea x=0 y la variable use toda la escala 0–1."
                 )
 
             st.info(
