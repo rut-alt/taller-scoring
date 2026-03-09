@@ -370,7 +370,7 @@ def build_fixed_model() -> Dict:
                 "name": "Profesión",
                 "peso_pct": 0.5,
                 "k": 4,
-                "labels": ["Paro", "Con Riesgo", "", "Jubilado"],
+                "labels": ["Paro", "Con Riesgo", "Sin Riesgo", "Jubilado"],
                 "gaps": [0.5, 0.5, 0.0],
                 "notes": "",
             },
