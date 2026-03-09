@@ -242,6 +242,10 @@ def hydrate_widget_state_from_model(model_state: dict):
         for j in range(1, int(var["k"]) + 1):
             st.session_state[f"lbl_{var['id']}_{j}"] = str(var["labels"][j - 1])
 
+        for t in range(1, int(var["k"])):
+            st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
+
+
 # =========================
 # Streamlit App
 # =========================
@@ -318,7 +322,9 @@ with st.sidebar:
     )
 
 
-# Inicialización de widgets si aún no existen
+# =========================
+# Inicialización de widgets
+# =========================
 for var in st.session_state.model["variables"]:
     normalize_labels(var)
     normalize_gaps(var)
@@ -433,9 +439,9 @@ for i, var in enumerate(vars_list):
                     f"Se aplicará el modo '{cap_mode}' para ajustarlo."
                 )
 
-conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
-xs = conv["x_values"]
-var["gaps"] = conv["gaps_eff"]
+            conv = gaps_to_x(k=int(var["k"]), gaps=var["gaps"], cap_mode=cap_mode)
+            xs = conv["x_values"]
+            var["gaps"] = conv["gaps_eff"]
 
             eps = 1e-6
             x_min = min(xs)
