@@ -242,10 +242,6 @@ def hydrate_widget_state_from_model(model_state: dict):
         for j in range(1, int(var["k"]) + 1):
             st.session_state[f"lbl_{var['id']}_{j}"] = str(var["labels"][j - 1])
 
-        for t in range(1, int(var["k"])):
-            st.session_state[f"gap_{var['id']}_{t}"] = float(var["gaps"][t - 1])
-
-
 # =========================
 # Streamlit App
 # =========================
