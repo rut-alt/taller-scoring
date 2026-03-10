@@ -118,7 +118,7 @@ def build_fixed_model() -> Dict:
                 "name": "Antigüedad 1ª contratación",
                 "peso_pct": 7.5,
                 "k": 5,
-                "labels": ["<= 2 años", "<= 5 años", "<= 7 años", <= 9 años", ">= 10 años"],
+                "labels": ["<= 2 años", "<= 5 años", "<= 7 años", "<= 9 años", ">= 10 años"],
                 "gaps": [0.3, 0.52, 0.18],
                 "notes": "",
             },
