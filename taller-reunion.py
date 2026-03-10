@@ -10,7 +10,7 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Taller Scoring - Europea Seguros",
-    page_icon="logo.png",  # tu logo
+    page_icon="REDUCCIO╠üN-AES-01.png",  # tu logo
     layout="wide"
 )
 
