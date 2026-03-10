@@ -8,6 +8,12 @@ import pandas as pd
 import streamlit as st
 
 
+st.set_page_config(
+    page_title="Taller Scoring - Europea Seguros",
+    page_icon="logo.png",  # tu logo
+    layout="wide"
+)
+
 @dataclass(frozen=True)
 class CategoryResult:
     j: int
